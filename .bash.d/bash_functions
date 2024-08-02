@@ -1,0 +1,149 @@
+# General Functions
+
+# Re-source bash files
+re-source() {
+  BASH_D="$HOME/.bash.d"
+
+  if [[ -d "$BASH_D" ]]; then
+    total_length=45
+    printf "╔═════════════════════════════════════════════╗\n"
+    printf "║                ${FG_GREEN}SOURCED FILES${TXT_RESET}                ║\n"
+    printf "╠═════════════════════════════════════════════╣\n"
+
+    for file in "$BASH_D"/*; do
+      if [[ -f "$file" && -r "$file" ]]; then
+          source "$file"
+          filename=$(basename "$file")
+          filename_length=${#filename}
+          padding_length=$(( (total_length - filename_length) / 2 ))
+          padding=""
+          
+          for (( i=0; i<padding_length; i++ )); do
+              padding+=" "
+          done
+          
+          if (( (total_length - filename_length) % 2 != 0 )); then
+              filename="$filename "
+          fi
+          
+          printf "║%s${FG_GREEN}%s${TXT_RESET}%s║\n" "$padding" "$filename" "$padding" 
+      fi
+    done
+    printf "╚═════════════════════════════════════════════╝\n"
+  else
+    echo "Directory $BASH_D does not exist."
+  fi
+}
+
+# Recursively find a directory
+cdfind() {
+    local search_pattern="$1"
+    local base_dir="${2:-.}"
+    local found_dir
+
+    if [[ -z "$search_pattern" ]]; then
+        echo "Usage: cdfind <search-pattern> [base-directory]"
+        return 1
+    fi
+
+    base_dir=$(eval echo "$base_dir")
+    search_pattern="*$search_pattern"
+    found_dir=$(find "$base_dir" -type d -path "$search_pattern" -print -quit 2>/dev/null)
+
+    if [[ -n "$found_dir" ]]; then
+        cd "$found_dir" || return 1
+        echo "Changed directory to: $found_dir"
+    else
+        echo "Directory matching '$search_pattern' not found in '$base_dir'."
+        return 1
+    fi
+}
+
+# Watch tail of a file
+wt() {
+    if [ "$#" -ne 3 ]; then
+        echo "Usage: wt <seconds> <lines> <file>"
+        return 1
+    fi
+
+    local seconds=$1
+    local lines=$2
+    local file=$3
+
+    if ! [[ "$seconds" =~ ^[0-9]+$ ]] || [ "$seconds" -le 0 ]; then
+        echo "Error: <seconds> must be a positive integer."
+        return 1
+    fi
+
+    if ! [[ "$lines" =~ ^[0-9]+$ ]] || [ "$lines" -le 0 ]; then
+        echo "Error: <lines> must be a positive integer."
+        return 1
+    fi
+
+    if [ ! -f "$file" ]; then
+        echo "Error: File '$file' does not exist."
+        return 1
+    fi
+
+    watch -n "$seconds" "tail -n $lines $file"
+}
+
+# User for ssh
+user() {
+    echo "$(whoami)@$(ifconfig en0 | grep 'inet ' | awk '{print $2}')"
+}
+
+# Print path with newlines
+pathd() {
+    if [[ -n "$1" ]]; then
+        temp=$1
+        echo -e "${temp//:/\\n}"
+    else
+        echo -e "${PATH//:/\\n}"
+    fi
+}
+
+# Remove duplicates in path
+cleanpath() {
+    export OLD_PATH="$PATH"
+    TEMP=$(echo "$OLD_PATH" | tr ':' '\n' | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//')
+
+    if [[ "$1" == "-d" ]]; then
+        echo "Cleaned PATH without updating:"
+        echo -e "${TEMP//:/\\n}"
+    else
+        export PATH="$TEMP"
+        if [[ "$1" != "-q" ]]; then
+            echo "Updated PATH:"
+            pathd
+        fi
+    fi
+}
+
+# Undo cleanpath
+revertpath() {
+    if [[ -n "$OLD_PATH" ]]; then
+        export PATH="$OLD_PATH"
+        echo "Reverted to OLD_PATH:"
+        pathd
+    else
+        echo "No old PATH found to revert to."
+    fi
+}
+
+fs() {
+	if du -b /dev/null > /dev/null 2>&1; then
+		local arg=-sbh;
+	else
+		local arg=-sh;
+	fi
+	if [[ -n "$@" ]]; then
+		du $arg -- "$@";
+	else
+		du $arg .[^.]* ./*;
+	fi;
+}
+
+tre() {
+	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
+}

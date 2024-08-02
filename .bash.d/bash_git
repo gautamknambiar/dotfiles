@@ -1,0 +1,177 @@
+
+# Git aliases
+alias g="git"
+alias gs="git status"
+alias gst="git stash"
+alias gstl="git stash list"
+alias gstp="git stash pop"
+alias ga="git add"
+alias gps="git push origin --force"
+alias gpl="git pull origin"
+alias gcm="git commit"
+alias gcma="git commit --amend"
+alias gcmu="git reset --soft HEAD~1"
+alias glg="git log"
+
+# Global array for parsing
+ugit_parsed_args=()
+
+# Replace branch indices with branch names
+git_parse_args() {
+    local arr=("$@")
+    local index
+    local branch_name
+
+    ugit_parsed_args=()  # Reset the global array
+
+    for arg in "${arr[@]}"; do
+        if [[ $arg =~ ^b([0-9]+)$ ]]; then
+            index=${arg#b}
+            branch_name=$(git branch | sed -n "${index}p" | sed 's/^[* ]*//')
+            if [[ -z $branch_name ]]; then
+                echo "Branch index $index does not exist."
+                return 1
+            fi
+            ugit_parsed_args+=("${arg/$arg/$branch_name}")
+        else
+            ugit_parsed_args+=("$arg")
+        fi
+    done
+}
+
+# Test the argument parce function
+testargs(){
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+
+    i=0
+    for arg in "${args[@]}" ; do
+        echo "[$i]: $arg"
+        ((i++))
+    done
+}
+
+# Clean rebase function, removes all history
+crb() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: crb <main-branch> <feature-branch> [commit-message]"
+    return 1
+    fi
+
+    local main_branch=$1
+    local feature_branch=$2
+    local commit_message=$3
+    local temp_patch_file="feature.patch"
+
+    read -p "Execute command 'crb ${main_branch} ${feature_branch}${commit_message:+ \"${commit_message}\"}'? (y/n): " confirm && [ "$confirm" = "y" ] || { echo "Aborting"; return 1; }
+
+    git checkout "$main_branch" || { echo "Failed to checkout $main_branch"; return 1; }
+    git diff "$main_branch" "$feature_branch" > "$temp_patch_file" || { echo "Failed to generate diff"; return 1; }
+    git branch -D "$feature_branch" || { echo "Failed to delete local $feature_branch"; return 1; }
+    git checkout -b "$feature_branch" || { echo "Failed to create new $feature_branch"; return 1; }
+    git apply --reject --whitespace=fix "$temp_patch_file" || { echo "Failed to apply patch"; return 1; }
+
+    if [ -n "$commit_message" ]; then
+        git add . || { echo "Failed to add changes"; return 1; }
+        git commit -m "$commit_message" || { echo "Failed to commit changes"; return 1; }
+        echo "Changes applied to $feature_branch and committed."
+    else
+        echo "Changes applied to $feature_branch without commit"
+    fi
+
+    rm "$temp_patch_file" || { echo "Failed to delete temporary patch file"; return 1; }
+
+    echo "Clean branch $feature_branch created successfully."
+    }
+
+# Multiple rebase function, rebases consecutively
+mrb() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+
+    if [ "$#" -lt 2 ]; then
+        echo "Usage: multirb branch1 branch2 [branch3 ...]"
+        return 1
+    fi
+    read -p "Execute command 'mrb $@ '? (y/n): " || { echo "Aborting"; return 1; }
+
+    local original_branch=$1
+    shift
+
+    for prev_branch in "$@"; do
+        git checkout "$prev_branch" || { echo "Failed to checkout $prev_branch"; return 1; }
+        git rebase "$original_branch" || { echo "Rebase failed for $prev_branch onto $original_branch"; return 1; }
+        original_branch="$prev_branch"
+    done
+
+    git checkout "$original_branch" || { echo "Failed to checkout back to $original_branch"; return 1; }
+}
+
+# Git branch supporting branch indexing
+gb() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+
+    git rev-parse --is-inside-work-tree &>/dev/null || { echo "Not a git repository"; return 1; }
+    local branches=($(git branch | sed 's/^[* ]*//'))
+    local current_branch=$(git branch | grep '^\*' | sed 's/^\* //')
+
+    if [[ -n "$1" ]]; then
+        git branch "$@"
+    else
+        if [[ ${#branches[@]} -eq 0 ]]; then
+            echo "No local branches"
+        else
+            echo "Local branches:"
+            i=1
+            for branch in "${branches[@]}" ; do
+                if [[ "${branch}" == "${current_branch}" ]]; then
+                    printf "${FG_GREEN}[${TXT_RESET}${i}${FG_GREEN}]${TXT_RESET} * ${FG_GREEN}${branch}${TXT_RESET}\n"
+                else
+                    printf "${FG_GREEN}[${TXT_RESET}${i}${FG_GREEN}]${TXT_RESET}   ${branch}\n"
+                fi
+                ((i++))
+            done
+        fi
+    fi
+}
+
+gamend() {
+    osascript "$HOME/dotfiles/Scripts/amend.applescript" &
+}
+
+# Git checkout supporting branch indexing
+gch() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+    git checkout $@
+}
+
+# Git merge supporting branch indexing
+gmr() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+    git merge $@
+}
+
+# Git rebase supporting branch indexing
+grb() {
+    local args=("$@")
+    git_parse_args "${args[@]}"
+    set -- "${ugit_parsed_args[@]}"
+    git rebase $@
+}
+
+# Push and set a new upstream branch 
+gpsu() {
+    git push --force --set-upstream origin $(git rev-parse --abbrev-ref HEAD)
+}

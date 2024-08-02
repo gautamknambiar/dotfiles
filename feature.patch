@@ -1,0 +1,67 @@
+diff --git a/.bash.d/bash_extra b/.bash.d/bash_extra
+index fc80507..189cedc 100644
+--- a/.bash.d/bash_extra
++++ b/.bash.d/bash_extra
+@@ -2,4 +2,6 @@
+ 
+ set -o vi
+ 
++eval "$(fzf --bash)"
++
+ PATH+=:${HOME}/code/ebash/bin
+diff --git a/.bash.d/bash_git b/.bash.d/bash_git
+index 7cded4d..7349048 100644
+--- a/.bash.d/bash_git
++++ b/.bash.d/bash_git
+@@ -166,5 +166,5 @@ grb() {
+ 
+ # Push and set a new upstream branch 
+ gpsu() {
+-    git push --set-upstream origin $(git rev-parse --abbrev-ref HEAD)
++    git push --force --set-upstream origin $(git rev-parse --abbrev-ref HEAD)
+ }
+diff --git a/.zsh.d/zsh_extra b/.zsh.d/zsh_extra
+index 613578d..3028bdd 100644
+--- a/.zsh.d/zsh_extra
++++ b/.zsh.d/zsh_extra
+@@ -10,6 +10,6 @@ source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+ 
+ # z.lua Folder Navigation
+ eval "$(lua $(brew --prefix z.lua)/share/z.lua/z.lua --init zsh)"
+-
++source <(fzf --zsh)
+ # Path
+ PATH+=:${HOME}/code/ebash/bin
+diff --git a/.zsh.d/zsh_git b/.zsh.d/zsh_git
+index dba1a47..474d25a 100644
+--- a/.zsh.d/zsh_git
++++ b/.zsh.d/zsh_git
+@@ -167,5 +167,5 @@ grb() {
+ 
+ # Push and set a new upstream branch 
+ gpsu() {
+-    git push --set-upstream origin $(git rev-parse --abbrev-ref HEAD)
++    git push --force --set-upstream origin $(git rev-parse --abbrev-ref HEAD)
+ }
+diff --git a/Scripts/install.sh b/Scripts/install.sh
+index 4885f57..263d264 100755
+--- a/Scripts/install.sh
++++ b/Scripts/install.sh
+@@ -58,7 +58,7 @@ if [ "$(uname)" == "Darwin" ]; then
+     else
+         echo "Homebrew is already installed"
+     fi
+-    brew install bash git fastfetch jq lua oniguruma z.lua zsh-autosuggestions zsh-syntax-highlighting tree
++    brew install bash git fastfetch jq lua oniguruma z.lua zsh-autosuggestions zsh-syntax-highlighting tree tmux python3 coreutils fzf
+     
+     # Update PATH for Apple Silicon macOS
+     export PATH="/opt/homebrew/bin:$PATH"
+@@ -73,7 +73,7 @@ if [ "$(uname)" == "Darwin" ]; then
+ elif [ "$(uname)" == "Linux" ]; then
+     # Linux setup
+     sudo apt-get update
+-    sudo apt-get install -y bash git fastfetch jq lua oniguruma z.lua zsh-autosuggestions zsh-syntax-highlighting
++    sudo apt-get install -y bash git fastfetch jq lua oniguruma z.lua zsh-autosuggestions zsh-syntax-highlighting tree tmux python3 fzf
+ else
+     echo "No installation available for system"
+ fi

@@ -1,0 +1,15 @@
+# Place for settings without homes
+
+set -o vi
+
+export ZSH_HIGHLIGHT_HIGHLIGHTERS_DIR=/opt/homebrew/share/zsh-syntax-highlighting/highlighters
+
+# zsh-syntax-highlighting & zsh-autosuggestions
+source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# z.lua Folder Navigation
+eval "$(lua $(brew --prefix z.lua)/share/z.lua/z.lua --init zsh)"
+source <(fzf --zsh)
+# Path
+PATH+=:${HOME}/code/ebash/bin

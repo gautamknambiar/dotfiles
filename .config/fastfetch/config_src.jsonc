@@ -1,0 +1,194 @@
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  "logo": {
+    "padding": {
+      "top": 4,
+      "left": 3
+    },
+    "source": "~/.config/fastfetch/logo.txt",
+    "color": {
+      "1": "default",
+      "2": "green",
+      "3": "bright_",
+      "4": "blink_",
+      "5": "reset_",
+      "6": "inverse_",
+      "7": "strike_",
+      "8": "italic_"
+    }
+  },
+  "display": {
+    "separator": ""
+  },
+  "modules": [
+    {
+      "key": "{#0}╔═════════════════╦═══════════════════════╗",
+      "type": "custom"
+    },
+    {
+      "format": "{#0}║ {user-name-colored}   {at-symbol-colored}\u001b[23C║\u001b[23D  {host-name-colored}",
+      "type": "title"
+    },
+    {
+      "key": "{#0}╠═════════════════╬═══════════════════════╩═════════════════════════════════════════════════════╗",
+      "type": "custom"
+    },
+    {
+      "key": "{#0}║ {#green}os              {#0}║  \u001b[75C║\u001b[75D",
+      "type": "os"
+    },
+    {
+      "key": "{#0}║ {#green}host            {#0}║  \u001b[75C║\u001b[75D",
+      "type": "host"
+    },
+    {
+      "key": "{#0}║ {#green}uptime          {#0}║  \u001b[75C║\u001b[75D",
+      "type": "uptime"
+    },
+    {
+      "key": "{#0}║ {#green}packages        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "packages"
+    },
+    {
+      "key": "{#0}║ {#green}shell           {#0}║  \u001b[75C║\u001b[75D",
+      "type": "shell"
+    },
+    {
+      "key": "{#0}║ {#green}display         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "display"
+    },
+    {
+      "key": "{#0}║ {#green}de              {#0}║  \u001b[75C║\u001b[75D",
+      "type": "de"
+    },
+    {
+      "key": "{#0}║ {#green}wm              {#0}║  \u001b[75C║\u001b[75D",
+      "type": "wm"
+    },
+    {
+      "key": "{#0}║ {#green}wmtheme         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "wmtheme"
+    },
+    {
+      "key": "{#0}║ {#green}font            {#0}║  \u001b[75C║\u001b[75D",
+      "type": "font"
+    },
+    {
+      "key": "{#0}║ {#green}cursor          {#0}║  \u001b[75C║\u001b[75D",
+      "type": "cursor"
+    },
+    {
+      "key": "{#0}║ {#green}terminal        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "terminal"
+    },
+    {
+      "key": "{#0}║ {#green}termfont        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "terminalfont"
+    },
+    {
+      "key": "{#0}║ {#green}termsize        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "terminalsize"
+    },
+    {
+      "key": "{#0}║ {#green}termtheme       {#0}║  \u001b[75C║\u001b[75D",
+      "type": "terminaltheme"
+    },
+    {
+      "key": "{#0}║ {#green}cpu             {#0}║  \u001b[75C║\u001b[75D",
+      "type": "cpu",
+      "showPeCoreCount": true,
+      "temp": true
+    },
+    {
+      "key": "{#0}║ {#green}cpucache        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "cpucache"
+    },
+    {
+      "key": "{#0}║ {#green}cpuusage        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "cpuusage"
+    },
+    {
+      "key": "{#0}║ {#green}gpu             {#0}║  \u001b[75C║\u001b[75D",
+      "type": "gpu",
+      "driverSpecific": true,
+      "temp": true
+    },
+    {
+      "key": "{#0}║ {#green}memory          {#0}║  \u001b[75C║\u001b[75D",
+      "type": "memory"
+    },
+    {
+      "key": "{#0}║ {#green}swap            {#0}║  \u001b[75C║\u001b[75D",
+      "type": "swap"
+    },
+    {
+      "key": "{#0}║ {#green}disk            {#0}║  \u001b[75C║\u001b[75D",
+      "type": "disk"
+    },
+    {
+      "key": "{#0}║ {#green}battery         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "battery"
+    },
+    {
+      "key": "{#0}║ {#green}publicip        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "publicip"
+    },
+    {
+      "key": "{#0}║ {#green}localip         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "localip",
+      "showIpv6": true,
+      "showMac": true
+    },
+    {
+      "key": "{#0}║ {#green}dns             {#0}║  \u001b[75C║\u001b[75D",
+      "type": "dns"
+    },
+    {
+      "key": "{#0}║ {#green}wifi            {#0}║  \u001b[75C║\u001b[75D",
+      "type": "wifi"
+    },
+    {
+      "key": "{#0}║ {#green}datetime        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "datetime"
+    },
+    {
+      "key": "{#0}║ {#green}locale          {#0}║  \u001b[75C║\u001b[75D",
+      "type": "locale"
+    },
+    {
+      "key": "{#0}║ {#green}weather         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "weather",
+      "timeout": 1000
+    },
+    {
+      "key": "{#0}║ {#green}netio           {#0}║  \u001b[75C║\u001b[75D",
+      "type": "netio"
+    },
+    {
+      "key": "{#0}║ {#green}diskio          {#0}║  \u001b[75C║\u001b[75D",
+      "type": "diskio"
+    },
+    {
+      "key": "{#0}║ {#green}physdisk        {#0}║  \u001b[75C║\u001b[75D",
+      "type": "physicaldisk",
+      "temp": true
+    },
+    {
+      "key": "{#0}║ {#green}version         {#0}║  \u001b[75C║\u001b[75D",
+      "type": "version"
+    },
+    {
+      "key": "{#0}╠═════════════════╬═════════════════════════════════════════════════════════════════════════════╝",
+      "type": "custom"
+    },
+    {
+      "key": "{#0}║\u001b[17C║\u001b[17D",
+      "type": "colors",
+      "symbol": "square"
+    },
+    {
+      "key": "{#0}╚═════════════════╝",
+      "type": "custom"
+    }
+  ]
+}

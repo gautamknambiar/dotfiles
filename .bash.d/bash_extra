@@ -1,0 +1,7 @@
+# Place for settings without homes
+
+set -o vi
+
+eval "$(fzf --bash)"
+
+PATH+=:${HOME}/code/ebash/bin
