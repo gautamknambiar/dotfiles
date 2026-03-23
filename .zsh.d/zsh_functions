@@ -1,38 +1,133 @@
 # General Functions
 
+__zsh_emit() {
+    local output_file="$1"
+    shift
+
+    if [[ -n "$output_file" ]]; then
+        printf "$@" >> "$output_file"
+    else
+        printf "$@"
+    fi
+}
+
+source_zsh_d_files() {
+    local output_file="${1:-}"
+    local output_style="${2:-terminal}"
+    local zsh_d="${ZSH_D:-$HOME/.zsh.d}"
+    local total_length=45
+    local totalfiles=0
+    local color_start=""
+    local color_end=""
+
+    case "$output_style" in
+        fastfetch)
+            color_start='$2'
+            color_end='$1'
+            ;;
+        terminal)
+            color_start="${FG_GREEN:-}"
+            color_end="${TXT_RESET:-}"
+            ;;
+    esac
+
+    if [[ -d "$zsh_d" ]]; then
+        __zsh_emit "$output_file" "╔═════════════════════════════════════════════╗\n"
+        __zsh_emit "$output_file" "║                %sSOURCED FILES%s                ║\n" "$color_start" "$color_end"
+        __zsh_emit "$output_file" "╠═════════════════════════════════════════════╣\n"
+
+        for file in "$zsh_d"/*; do
+            if [[ -f "$file" && -r "$file" ]]; then
+                ((totalfiles++))
+                source "$file"
+
+                local filename
+                local filename_length
+                local padding_length
+                local padding=""
+                local i
+
+                filename=$(basename "$file")
+                filename_length=${#filename}
+                padding_length=$(( (total_length - filename_length) / 2 ))
+
+                for ((i=0; i<padding_length; i++)); do
+                    padding+=" "
+                done
+
+                if (( (total_length - filename_length) % 2 != 0 )); then
+                    filename="$filename "
+                fi
+
+                __zsh_emit "$output_file" "║%s%s%s%s%s║\n" "$padding" "$color_start" "$filename" "$color_end" "$padding"
+            fi
+        done
+
+        __zsh_emit "$output_file" "╚═════════════════════════════════════════════╝"
+    else
+        echo "Directory $zsh_d does not exist."
+        return 1
+    fi
+
+    SOURCE_ZSH_D_TOTALFILES=$totalfiles
+}
+
+show_daily_fastfetch() {
+    local logo_file="${LOGO_FILE:-$HOME/.config/fastfetch/logo.txt}"
+    local config_file="${CONFIG_FILE:-$HOME/.config/fastfetch/config_src.jsonc}"
+    local newcomp_file="$HOME/.config/fastfetch/newcomp.txt"
+    local top_value
+
+    [[ -f "$newcomp_file" ]] || return 0
+    [[ -f "$config_file" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    command -v fastfetch >/dev/null 2>&1 || return 0
+
+    cat "$newcomp_file" > "$logo_file"
+    printf "\n" >> "$logo_file"
+
+    if ! source_zsh_d_files "$logo_file" fastfetch; then
+        rm -f "$logo_file"
+        return 1
+    fi
+
+    printf "\n" >> "$logo_file"
+
+    top_value=$(( (13 - SOURCE_ZSH_D_TOTALFILES) / 2 ))
+    if (( top_value < 0 )); then
+        top_value=0
+    fi
+
+    jq --argjson newTop "$top_value" '.logo.padding.top = $newTop' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+    fastfetch --config "$config_file"
+    rm -f "$logo_file"
+}
+
+zsh_daily_motd() {
+    local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+    local stamp_dir="$state_home/shell-motd"
+    local stamp_file="$stamp_dir/zsh-fastfetch.last"
+    local today
+
+    today=$(date +%F)
+    mkdir -p "$stamp_dir"
+
+    if [[ -r "$stamp_file" ]] && [[ "$(cat "$stamp_file")" == "$today" ]]; then
+        re-source
+        return
+    fi
+
+    if show_daily_fastfetch; then
+        printf '%s\n' "$today" > "$stamp_file"
+    else
+        re-source
+    fi
+}
+
 # Re-source zsh files
 re-source() {
-  ZSH_D="$HOME/.zsh.d"
-
-  if [[ -d "$ZSH_D" ]]; then
-    total_length=45
-    printf "╔═════════════════════════════════════════════╗\n"
-    printf "║                ${FG_GREEN}SOURCED FILES${TXT_RESET}                ║\n"
-    printf "╠═════════════════════════════════════════════╣\n"
-
-    for file in "$ZSH_D"/*; do
-      if [[ -f "$file" && -r "$file" ]]; then
-          source "$file"
-          filename=$(basename "$file")
-          filename_length=${#filename}
-          padding_length=$(( (total_length - filename_length) / 2 ))
-          padding=""
-          
-          for (( i=0; i<padding_length; i++ )); do
-              padding+=" "
-          done
-          
-          if (( (total_length - filename_length) % 2 != 0 )); then
-              filename="$filename "
-          fi
-          
-          printf "║%s${FG_GREEN}%s${TXT_RESET}%s║\n" "$padding" "$filename" "$padding" 
-      fi
-    done
-    printf "╚═════════════════════════════════════════════╝\n"
-  else
-    echo "Directory $ZSH_D does not exist."
-  fi
+    source_zsh_d_files "" terminal
+    printf "\n"
 }
 
 # Recursively find a directory

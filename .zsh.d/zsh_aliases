@@ -21,16 +21,18 @@ alias rgrephl="find . -name '*.h' | xargs grep -l $1"
 alias rgrepc="find . -name '*.c' | xargs grep $1"
 alias rgrepcl="find . -name '*.c' | xargs grep -l $1"
 
-# Courtesy of Caden
-alias pfd='osascript -e '\''tell application "Finder" to return POSIX path of (insertion location as alias)'\'''
-alias cdf='cd "$(pfd)"'
-alias ofd="open ."
+if [[ "$(uname)" == "Darwin" ]]; then
+    # Courtesy of Caden
+    alias pfd='osascript -e '\''tell application "Finder" to return POSIX path of (insertion location as alias)'\'''
+    alias cdf='cd "$(pfd)"'
+    alias ofd="open ."
 
-# System
-alias afk='osascript -e "tell application \"System Events\" to keystroke \"q\" using {control down, command down}"'
-alias slp='osascript -e "tell application \"System Events\" to sleep"'
-alias sdn='osascript -e "tell application \"System Events\" to shut down"'
-alias rst='osascript -e "tell application \"System Events\" to restart"'
+    # System
+    alias afk='osascript -e "tell application \"System Events\" to keystroke \"q\" using {control down, command down}"'
+    alias slp='osascript -e "tell application \"System Events\" to sleep"'
+    alias sdn='osascript -e "tell application \"System Events\" to shut down"'
+    alias rst='osascript -e "tell application \"System Events\" to restart"'
+fi
 
 #Fun
 alias ff="fastfetch"

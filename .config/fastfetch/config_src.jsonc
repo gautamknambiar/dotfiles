@@ -26,7 +26,7 @@
       "type": "custom"
     },
     {
-      "format": "{#0}║ {user-name-colored}   {at-symbol-colored}\u001b[23C║\u001b[23D  {host-name-colored}",
+      "format": "{#0}║ {user-name-colored}\u001b[19G{at-symbol-colored}\u001b[43G{#0}║\u001b[22G{host-name-colored}",
       "type": "title"
     },
     {

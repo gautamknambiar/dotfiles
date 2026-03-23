@@ -138,7 +138,12 @@ gb() {
 }
 
 gamend() {
-    osascript "$HOME/dotfiles/Scripts/amend.applescript" &
+    if [[ "$(uname)" == "Darwin" ]]; then
+        osascript "$HOME/dotfiles/Scripts/amend.applescript" &
+    else
+        echo "gamend is only available on macOS"
+        return 1
+    fi
 }
 
 # Git checkout supporting branch indexing

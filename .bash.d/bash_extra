@@ -2,6 +2,8 @@
 
 set -o vi
 
-eval "$(fzf --bash)"
+if command -v fzf >/dev/null 2>&1 && [ -f /usr/share/doc/fzf/examples/key-bindings.bash ]; then
+    source /usr/share/doc/fzf/examples/key-bindings.bash
+fi
 
 PATH+=:${HOME}/code/ebash/bin
