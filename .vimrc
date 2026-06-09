@@ -11,7 +11,11 @@ set clipboard=unnamedplus
 
 " Enable undo persistence
 set undofile
-set undodir=~/.vim/undodir
+let s:undo_dir = exists('$XDG_STATE_HOME') ? $XDG_STATE_HOME . '/vim/undo' : expand('~/.local/state/vim/undo')
+if !isdirectory(s:undo_dir)
+    call mkdir(s:undo_dir, 'p', 0700)
+endif
+execute 'set undodir=' . fnameescape(s:undo_dir)
 
 " Improve searching
 set incsearch
@@ -68,9 +72,9 @@ vnoremap <M-x> "+d<Esc>i
 " Map Alt+D to Delete without copying to any register (black hole) and return to insert mode
 vnoremap <M-d> "_d<Esc>i
 
-" Map Alt+D to Delete without copying to any register (black hole) and return to insert mode
-nnoremap <M-f> "<Esc>?
-inoremap <M-f> "<Esc>?
+" Map Alt+F to search backwards
+nnoremap <M-f> ?
+inoremap <M-f> <Esc>?
 vnoremap <silent> <M-f> y/\V<C-R>=escape(@",'/\')<CR><CR>i
 
 " Map Ctrl+S to Save

@@ -11,7 +11,11 @@ set incsearch
 set hlsearch
 colorscheme blue
 set undofile
-set undodir=~/.config/nvim/undodir
+let s:undo_dir = exists('$XDG_STATE_HOME') ? $XDG_STATE_HOME . '/nvim/undo' : expand('~/.local/state/nvim/undo')
+if !isdirectory(s:undo_dir)
+    call mkdir(s:undo_dir, 'p', 0700)
+endif
+execute 'set undodir=' . fnameescape(s:undo_dir)
 set clipboard=unnamedplus
 autocmd BufWritePost ~/.config/nvim/init.vim source ~/.config/nvim/init.vim
 set backspace=indent,eol,start

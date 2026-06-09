@@ -94,7 +94,9 @@ alias l='ls -CF'
 
 # Add an "alert" alias for long running commands.  Use like so:
 #   sleep 10; alert
-alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+if command -v notify-send >/dev/null 2>&1; then
+    alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+fi
 
 # Alias definitions.
 # You may want to put all your additions into a separate file like
@@ -121,7 +123,6 @@ if [ "$(uname)" = "Darwin" ] && [ -x /opt/homebrew/bin/brew ]; then
 fi
 
 BASH_D="$HOME/.bash.d"
-LOGO_FILE="$HOME/.config/fastfetch/logo.txt"
 CONFIG_FILE="$HOME/.config/fastfetch/config_src.jsonc"
 
 if [[ -r "$BASH_D/bash_colors" ]]; then
@@ -135,3 +136,7 @@ fi
 bash_daily_motd
 
 cleanpath -q
+
+if [ -r "$HOME/.local/bin/env" ]; then
+    . "$HOME/.local/bin/env"
+fi

@@ -2,13 +2,51 @@
 
 set -e  # Exit on any error
 
-# Define variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DOTFILES_REPO="https://github.com/gautamknambiar/dotfiles.git"
-DOTFILES_DIR="$HOME/dotfiles"
-BACKUP_DIR="$HOME/dotfiles_backup"
+DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/gautamknambiar/dotfiles.git}"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
+BACKUP_DIR="${DOTFILES_BACKUP_DIR:-$HOME/dotfiles_backup}"
 APPLESCRIPT_PATH="$DOTFILES_DIR/Scripts/terminal.applescript"
+
+is_macos() {
+    [ "$(uname -s)" = "Darwin" ]
+}
+
+is_linux() {
+    [ "$(uname -s)" = "Linux" ]
+}
+
+is_wsl() {
+    is_linux || return 1
+    if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+        return 0
+    fi
+    [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ]
+}
+
+platform_name() {
+    if is_macos; then
+        echo "macOS"
+    elif is_wsl; then
+        echo "WSL Linux"
+    elif is_linux; then
+        echo "Linux"
+    else
+        uname -s
+    fi
+}
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        echo "Skipping root command because sudo is not available: $*" >&2
+        return 1
+    fi
+}
 
 prompt_yes_no() {
     local prompt="$1"
@@ -16,7 +54,7 @@ prompt_yes_no() {
     local reply
 
     if [ ! -t 0 ]; then
-        echo "$prompt [$default_answer/n] (non-interactive: defaulting to $default_answer)"
+        echo "$prompt (non-interactive: defaulting to $default_answer)"
         case "$default_answer" in
             Y|y) return 0 ;;
             *) return 1 ;;
@@ -45,8 +83,8 @@ prompt_conflict_action() {
     local reply
 
     if [ ! -t 0 ]; then
-        echo "Conflict for $path [k/a/R] (non-interactive: defaulting to replace)" >&2
-        echo "replace"
+        echo "Conflict for $path [k/a/R] (non-interactive: defaulting to keep)" >&2
+        echo "keep"
         return
     fi
 
@@ -116,8 +154,11 @@ append_source_into_existing() {
 replace_with_symlink() {
     local source_path="$1"
     local destination_path="$2"
+    local parent_dir
 
     backup_target "$destination_path"
+    parent_dir="$(dirname "$destination_path")"
+    mkdir -p "$parent_dir"
     echo "Creating symlink for $(basename "$destination_path")"
     ln -s "$source_path" "$destination_path"
 }
@@ -147,12 +188,16 @@ ensure_symlink() {
     local file="$1"
     local target="$DOTFILES_DIR/$file"
     local home_path="$HOME/$file"
+    local parent_dir
     local action
 
     if [ ! -e "$target" ] && [ ! -L "$target" ]; then
         echo "Skipping $file because $target does not exist in the dotfiles repo"
         return
     fi
+
+    parent_dir="$(dirname "$home_path")"
+    mkdir -p "$parent_dir"
 
     if [ -L "$home_path" ]; then
         if [ "$(readlink "$home_path")" = "$target" ]; then
@@ -244,20 +289,27 @@ install_apt_packages() {
         return 0
     fi
 
-    sudo apt-get install -y "${available_packages[@]}"
+    run_as_root apt-get install -y "${available_packages[@]}"
 }
 
+echo "Detected platform: $(platform_name)"
 ensure_repo
 
 maybe_link_group "Install bash symlinks (.bashrc, .bash.d)?" .bashrc .bash.d
 maybe_link_group "Install zsh symlinks (.zshrc, .zsh.d)?" .zshrc .zsh.d
-maybe_link_group "Install shared config symlink (.config)?" .config
+maybe_link_group "Install Vim config symlink (.vimrc)?" .vimrc
+maybe_link_group "Install shared config symlinks (.config/nvim, .config/fastfetch)?" .config/nvim .config/fastfetch
 
+if is_macos; then
+    maybe_link_group "Install macOS Terminal profile config (.config/terminal)?" .config/terminal
+else
+    echo "Skipping macOS Terminal profile config on $(platform_name)"
+fi
 
-if [ "$(uname)" == "Darwin" ]; then
+if is_macos; then
     # Apple Silicon macOS
-    if ! command -v brew &> /dev/null; then
-        if prompt_yes_no "Install Homebrew?" "Y"; then
+    if ! command -v brew >/dev/null 2>&1; then
+        if prompt_yes_no "Install Homebrew?" "N"; then
             echo "Homebrew not found, installing..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         else
@@ -267,15 +319,15 @@ if [ "$(uname)" == "Darwin" ]; then
         echo "Homebrew is already installed"
     fi
 
-    if command -v brew &> /dev/null; then
-        if prompt_yes_no "Install/update Homebrew packages?" "Y"; then
+    if command -v brew >/dev/null 2>&1; then
+        if prompt_yes_no "Install/update Homebrew packages?" "N"; then
             brew install bash git fastfetch jq lua oniguruma z.lua zsh-autosuggestions zsh-syntax-highlighting tree tmux python3 coreutils fzf neovim
         else
             echo "Skipping Homebrew packages"
         fi
     fi
 
-    if prompt_yes_no "Install Neovim packer.nvim plugin manager?" "Y"; then
+    if prompt_yes_no "Install Neovim packer.nvim plugin manager?" "N"; then
         install_neovim_packer
     else
         echo "Skipping packer.nvim installation"
@@ -285,7 +337,7 @@ if [ "$(uname)" == "Darwin" ]; then
     export PATH="/opt/homebrew/bin:$PATH"
 
     if [ -f "$APPLESCRIPT_PATH" ]; then
-        if prompt_yes_no "Import Terminal profiles with AppleScript?" "Y"; then
+        if prompt_yes_no "Import Terminal profiles with AppleScript?" "N"; then
             echo "Executing AppleScript to import Terminal profiles..."
             osascript "$APPLESCRIPT_PATH"
         else
@@ -295,21 +347,28 @@ if [ "$(uname)" == "Darwin" ]; then
         echo "AppleScript file not found: $APPLESCRIPT_PATH"
     fi
     
-elif [ "$(uname)" == "Linux" ]; then
+elif is_linux; then
     # Linux setup
-    if prompt_yes_no "Run apt update?" "Y"; then
-        sudo apt-get update
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "apt-get not found; skipping Linux package installation"
+    elif prompt_yes_no "Run apt update?" "N"; then
+        run_as_root apt-get update
     else
         echo "Skipping apt update"
     fi
 
-    if prompt_yes_no "Install apt packages?" "Y"; then
+    if command -v apt-get >/dev/null 2>&1 && prompt_yes_no "Install apt packages?" "N"; then
         install_apt_packages \
             bash \
+            bash-completion \
+            ca-certificates \
+            curl \
             git \
+            iproute2 \
             jq \
             lua5.4 \
             libonig5 \
+            procps \
             zoxide \
             zsh-autosuggestions \
             zsh-syntax-highlighting \
@@ -317,7 +376,8 @@ elif [ "$(uname)" == "Linux" ]; then
             tmux \
             python3 \
             fzf \
-            neovim
+            neovim \
+            vim
     else
         echo "Skipping apt package installation"
     fi

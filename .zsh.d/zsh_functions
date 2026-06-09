@@ -2,12 +2,14 @@
 
 __zsh_emit() {
     local output_file="$1"
+    local format="$2"
+    shift
     shift
 
     if [[ -n "$output_file" ]]; then
-        printf "$@" >> "$output_file"
+        printf "$format" "$@" >> "$output_file"
     else
-        printf "$@"
+        printf "$format" "$@"
     fi
 }
 
@@ -73,15 +75,20 @@ source_zsh_d_files() {
 }
 
 show_daily_fastfetch() {
-    local logo_file="${LOGO_FILE:-$HOME/.config/fastfetch/logo.txt}"
+    local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+    local stamp_dir="$state_home/shell-motd"
+    local logo_file="${LOGO_FILE:-$stamp_dir/fastfetch-logo.txt}"
     local config_file="${CONFIG_FILE:-$HOME/.config/fastfetch/config_src.jsonc}"
+    local generated_config="$stamp_dir/fastfetch-config.jsonc"
+    local fastfetch_status
     local newcomp_file="$HOME/.config/fastfetch/newcomp.txt"
     local top_value
 
-    [[ -f "$newcomp_file" ]] || return 0
-    [[ -f "$config_file" ]] || return 0
-    command -v jq >/dev/null 2>&1 || return 0
-    command -v fastfetch >/dev/null 2>&1 || return 0
+    [[ -f "$newcomp_file" ]] || return 1
+    [[ -f "$config_file" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    command -v fastfetch >/dev/null 2>&1 || return 1
+    mkdir -p "$stamp_dir"
 
     cat "$newcomp_file" > "$logo_file"
     printf "\n" >> "$logo_file"
@@ -98,9 +105,17 @@ show_daily_fastfetch() {
         top_value=0
     fi
 
-    jq --argjson newTop "$top_value" '.logo.padding.top = $newTop' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
-    fastfetch --config "$config_file"
-    rm -f "$logo_file"
+    if ! jq --argjson newTop "$top_value" --arg logoSource "$logo_file" \
+        '.logo.padding.top = $newTop | .logo.source = $logoSource' \
+        "$config_file" > "$generated_config"; then
+        rm -f "$logo_file" "$generated_config"
+        return 1
+    fi
+
+    fastfetch --config "$generated_config"
+    fastfetch_status=$?
+    rm -f "$logo_file" "$generated_config"
+    return "$fastfetch_status"
 }
 
 zsh_daily_motd() {
@@ -141,7 +156,11 @@ cdfind() {
         return 1
     fi
 
-    base_dir=$(eval echo "$base_dir")
+    case "$base_dir" in
+        "~") base_dir="$HOME" ;;
+        "~/"*) base_dir="$HOME/${base_dir#~/}" ;;
+    esac
+
     search_pattern="*$search_pattern"
     found_dir=$(find "$base_dir" -type d -path "$search_pattern" -print -quit 2>/dev/null)
 
@@ -185,29 +204,40 @@ wt() {
 
 # User for ssh
 user() {
-    echo "$(whoami)@$(ifconfig en0 | grep 'inet ' | awk '{print $2}')"
+    local ip=""
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+    elif command -v hostname >/dev/null 2>&1; then
+        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+
+    if [[ -n "$ip" ]]; then
+        printf '%s@%s\n' "$(whoami)" "$ip"
+    else
+        whoami
+    fi
 }
 
 # Print path with newlines
 pathd() {
-    if [[ -n "$1" ]]; then
-        temp=$1
-        echo -e "${temp//:/\\n}"
-    else
-        echo -e "${PATH//:/\\n}"
-    fi
+    local path_value="${1:-$PATH}"
+
+    printf '%s\n' "$path_value" | tr ':' '\n'
 }
 
 # Remove duplicates in path
 cleanpath() {
     export OLD_PATH="$PATH"
-    TEMP=$(echo "$OLD_PATH" | tr ':' '\n' | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//')
+    local cleaned_path
+
+    cleaned_path=$(printf '%s\n' "$OLD_PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ':' | sed 's/:$//')
 
     if [[ "$1" == "-d" ]]; then
         echo "Cleaned PATH without updating:"
-        echo -e "${TEMP//:/\\n}"
+        printf '%s\n' "$cleaned_path" | tr ':' '\n'
     else
-        export PATH="$TEMP"
+        export PATH="$cleaned_path"
         if [[ "$1" != "-q" ]]; then
             echo "Updated PATH:"
             pathd
@@ -227,20 +257,22 @@ revertpath() {
 }
 
 fs() {
+    local arg
+
     if du -b /dev/null > /dev/null 2>&1; then
-        local arg=-sbh;
+        arg=-sbh
     else
-        local arg=-sh;
+        arg=-sh
     fi
 
-    if [[ -n "$@" ]]; then
-        du $arg -- "$@" | sort -hr;
+    if (( $# > 0 )); then
+        du "$arg" -- "$@" | sort -hr
     else
-        du $arg .[^.]* ./* | sort -hr;
+        du "$arg" .[^.]* ./* 2>/dev/null | sort -hr
     fi
 }
 
 
 tre() {
-	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
+    tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX
 }

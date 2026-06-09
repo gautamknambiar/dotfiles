@@ -3,7 +3,6 @@ if [[ "$(uname)" == "Darwin" && -x /opt/homebrew/bin/brew ]]; then
 fi
 
 ZSH_D="$HOME/.zsh.d"
-LOGO_FILE="$HOME/.config/fastfetch/logo.txt"
 CONFIG_FILE="$HOME/.config/fastfetch/config_src.jsonc"
 
 if [[ -r "$ZSH_D/zsh_colors" ]]; then
@@ -17,3 +16,7 @@ fi
 zsh_daily_motd
 
 cleanpath -q
+
+if [[ -r "$HOME/.local/bin/env" ]]; then
+    . "$HOME/.local/bin/env"
+fi

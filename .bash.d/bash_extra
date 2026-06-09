@@ -2,8 +2,12 @@
 
 set -o vi
 
-if command -v fzf >/dev/null 2>&1 && [ -f /usr/share/doc/fzf/examples/key-bindings.bash ]; then
+if [[ -t 0 ]] && command -v fzf >/dev/null 2>&1 && [ -f /usr/share/doc/fzf/examples/key-bindings.bash ]; then
     source /usr/share/doc/fzf/examples/key-bindings.bash
 fi
 
-PATH+=:${HOME}/code/ebash/bin
+if [[ -t 0 ]] && command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init bash)"
+fi
+
+PATH="${PATH}:${HOME}/code/ebash/bin"
