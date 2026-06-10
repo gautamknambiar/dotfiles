@@ -21,6 +21,11 @@ source_zsh_d_files() {
     local totalfiles=0
     local color_start=""
     local color_end=""
+    local filename
+    local filename_length
+    local padding_length
+    local padding
+    local i
 
     case "$output_style" in
         fastfetch)
@@ -43,15 +48,10 @@ source_zsh_d_files() {
                 ((totalfiles++))
                 source "$file"
 
-                local filename
-                local filename_length
-                local padding_length
-                local padding=""
-                local i
-
                 filename=$(basename "$file")
                 filename_length=${#filename}
                 padding_length=$(( (total_length - filename_length) / 2 ))
+                padding=""
 
                 for ((i=0; i<padding_length; i++)); do
                     padding+=" "

@@ -1,5 +1,6 @@
 _liqid_load_dotfiles_env() {
   local env_file="${DOTFILES_ENV_FILE:-$HOME/dotfiles/.env}"
+  local docker_conf="${LIQID_DOCKER_CONF:-$HOME/.liqid/docker.conf}"
 
   if [[ -r "$env_file" ]]; then
     set -a
@@ -9,6 +10,11 @@ _liqid_load_dotfiles_env() {
     set -a
     source "$HOME/.env"
     set +a
+  fi
+
+  if [[ -r "$docker_conf" ]]; then
+    # shellcheck source=/dev/null
+    source "$docker_conf"
   fi
 }
 
@@ -106,8 +112,8 @@ _liqid_select_remote_tag() {
   remote_status=$?
 
   if [[ $remote_status -eq 2 ]]; then
-    echo "LIQID_DOCKER_USERNAME/LIQID_DOCKER_PASSWORD not set." >&2
-    echo "Tip: use 'docker login' instead, or set the vars in dotfiles/.env." >&2
+    echo "Docker credentials not set." >&2
+    echo "Set them in $HOME/.liqid/docker.conf or dotfiles/.env." >&2
     _liqid_prompt_for_tag
     return 0
   fi
@@ -227,3 +233,734 @@ EOF
 dev() {
   liqid_dev "$@"
 }
+
+bbdl() (
+  local conf="${BITBUCKET_CONF:-$HOME/.liqid/bitbucket.conf}"
+  local user token workspace repo filename dest_dir tmpdir refresh_cache force_filename
+  local cache_root cache_ttl cache_workspace cache_repo cache_dir cache_file cache_lock_dir cache_refresh_started
+
+  _liqid_load_dotfiles_env
+
+  if [[ -r "$conf" ]]; then
+    # shellcheck source=/dev/null
+    source "$conf"
+  fi
+
+  user="${BITBUCKET_USERNAME:-}"
+  token="${BITBUCKET_APP_PASSWORD:-}"
+  workspace="${BITBUCKET_WORKSPACE:-${BITBUCKET_REPO_OWNER:-${BITBUCKET_REPRO_OWNER:-liqid}}}"
+  repo=""
+  filename=""
+  dest_dir="${BITBUCKET_DOWNLOAD_DIR:-$PWD}"
+  refresh_cache=0
+  force_filename=0
+  cache_refresh_started=0
+
+  while [[ $# -gt 0 ]]; do
+    case "${1:-}" in
+      -h|--help|help)
+      cat <<EOF
+Usage: bbdl [repo]
+       bbdl [workspace] [repo]
+       bbdl [repo] [filename]
+       bbdl [workspace] [repo] [filename]
+
+With no repo, bbdl prompts for a Bitbucket workspace and repository.
+
+Options:
+  --refresh            Ignore cached download metadata for this run
+  --filename           Treat two positional args as repo + filename
+
+Config:
+  BITBUCKET_USERNAME
+  BITBUCKET_APP_PASSWORD
+  BITBUCKET_WORKSPACE      Optional, defaults to liqid
+  BITBUCKET_DOWNLOAD_DIR   Optional, defaults to current directory
+  BBDL_CACHE_TTL           Optional seconds before cache is stale, defaults to 3600
+EOF
+      return 0
+      ;;
+      --refresh)
+        refresh_cache=1
+        shift
+        ;;
+      --filename|--file)
+        force_filename=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        return 1
+        ;;
+      *)
+        break
+        ;;
+  esac
+  done
+
+  case $# in
+    0)
+      ;;
+    1)
+      if (( force_filename )); then
+        echo "--filename requires repo and filename." >&2
+        return 1
+      fi
+      repo="$1"
+      ;;
+    2)
+      if (( force_filename )) || { [[ "$1" != "$workspace" ]] && [[ "$2" == *.* || "$2" == */* ]]; }; then
+        repo="$1"
+        filename="$2"
+      else
+        workspace="$1"
+        repo="$2"
+      fi
+      ;;
+    3)
+      workspace="$1"
+      repo="$2"
+      filename="$3"
+      ;;
+    *)
+      echo "Usage: bbdl [repo], bbdl [workspace] [repo], or bbdl [repo] [filename]" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ -z "$user" || -z "$token" ]]; then
+    echo "BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD must be set." >&2
+    echo "Set them in $conf, dotfiles/.env, or your shell environment." >&2
+    return 1
+  fi
+
+  _liqid_need curl || return 1
+  _liqid_need jq || return 1
+
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/bbdl.XXXXXX")" || return 1
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  _bbdl_prompt() {
+    local prompt="$1"
+    local default="${2-}"
+    local reply
+
+    if [[ -n "$default" ]]; then
+      printf '%s [%s]: ' "$prompt" "$default" >&2
+    else
+      printf '%s: ' "$prompt" >&2
+    fi
+
+    IFS= read -r reply || return 1
+    printf '%s' "${reply:-$default}"
+  }
+
+  _bbdl_expand_path() {
+    case "$1" in
+      "~")
+        printf '%s' "$HOME"
+        ;;
+      "~/"*)
+        printf '%s/%s' "$HOME" "${1#~/}"
+        ;;
+      *)
+        printf '%s' "$1"
+        ;;
+    esac
+  }
+
+  _bbdl_urlencode() {
+    jq -rn --arg value "$1" '$value | @uri'
+  }
+
+  _bbdl_cache_key() {
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
+  }
+
+  _bbdl_file_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+  }
+
+  _bbdl_current_pid() {
+    printf '%s' "${BASHPID:-$$}"
+  }
+
+  _bbdl_api_values() {
+    local url="$1"
+    local body
+
+    while [[ -n "$url" ]]; do
+      body="$(curl -fsS \
+        -u "$user:$token" \
+        -H "Accept: application/json" \
+        --connect-timeout 15 \
+        --max-time 120 \
+        "$url")" || {
+          echo >&2
+          echo "Bitbucket request failed." >&2
+          echo "Check username, app-password scopes, repo permissions, and workspace access." >&2
+          return 1
+        }
+
+      jq -e '.values? // []' >/dev/null <<< "$body" || {
+        echo "Bitbucket returned invalid JSON for: $url" >&2
+        return 1
+      }
+
+      jq -c '.values[]?' <<< "$body" || return 1
+      url="$(jq -r '.next // empty' <<< "$body")" || return 1
+    done
+  }
+
+  _bbdl_downloads_url() {
+    local pagelen="${1:-100}"
+    local sort="${2-}"
+    local fields="values.name,values.size,values.created_on,values.links.self.href,next,size,pagelen,page"
+
+    printf 'https://api.bitbucket.org/2.0/repositories/%s/%s/downloads?pagelen=%s&fields=%s' \
+      "$workspace" "$repo" "$pagelen" "$fields"
+
+    if [[ -n "$sort" ]]; then
+      printf '&sort=%s' "$sort"
+    fi
+  }
+
+  _bbdl_download_url() {
+    local encoded
+
+    encoded="$(_bbdl_urlencode "$1")" || return 1
+    printf 'https://api.bitbucket.org/2.0/repositories/%s/%s/downloads/%s' \
+      "$workspace" "$repo" "$encoded"
+  }
+
+  _bbdl_fetch_downloads_to_file() {
+    local url="$1"
+    local outfile="$2"
+    local max_items="${3:-0}"
+    local show_progress="${4:-1}"
+    local body page page_count fetched total total_text remaining
+
+    : > "$outfile" || return 1
+    page=1
+    fetched=0
+    total=""
+
+    while [[ -n "$url" ]]; do
+      body="$(curl -fsS \
+        -u "$user:$token" \
+        -H "Accept: application/json" \
+        --connect-timeout 15 \
+        --max-time 120 \
+        "$url")" || {
+          echo >&2
+          echo "Bitbucket request failed while fetching downloads page $page." >&2
+          echo "Check username, app-password scopes, repo permissions, and workspace access." >&2
+          return 1
+        }
+
+      jq -e '.values? // []' >/dev/null <<< "$body" || {
+        echo "Bitbucket returned invalid JSON while fetching downloads page $page." >&2
+        return 1
+      }
+
+      page_count="$(jq '.values | length' <<< "$body")" || return 1
+      [[ -z "$total" ]] && total="$(jq -r '.size // empty' <<< "$body")"
+
+      if (( max_items > 0 && fetched + page_count > max_items )); then
+        remaining=$((max_items - fetched))
+        if (( remaining > 0 )); then
+          jq -c --argjson n "$remaining" '.values[:$n][]?' <<< "$body" >> "$outfile" || return 1
+          fetched=$max_items
+        fi
+        url=""
+      else
+        jq -c '.values[]?' <<< "$body" >> "$outfile" || return 1
+        fetched=$((fetched + page_count))
+        url="$(jq -r '.next // empty' <<< "$body")" || return 1
+      fi
+
+      if (( show_progress )); then
+        total_text=""
+        [[ -n "$total" ]] && total_text=" of $total"
+        if (( page == 1 || page % 5 == 0 )) || [[ -z "$url" ]]; then
+          echo "Fetched $fetched$total_text downloads..." >&2
+        fi
+      fi
+
+      (( max_items > 0 && fetched >= max_items )) && break
+      page=$((page + 1))
+    done
+  }
+
+  _bbdl_render_choices_from_jsonl() {
+    local input="$1"
+    local output="$2"
+    local limit="${3:-0}"
+    local query="${4-}"
+
+    [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
+
+    jq -s -r --arg q "$query" --argjson n "$limit" '
+      map(select(
+        ($q == "")
+        or (((.name // "") | ascii_downcase) | contains($q | ascii_downcase))
+      ))
+      | sort_by(.created_on // "")
+      | reverse
+      | (if $n > 0 then .[0:$n] else . end)
+      | .[]
+      | [.name, ((.size // 0) | tostring), (.created_on // ""), (.links.self.href // "")]
+      | @tsv
+    ' "$input" > "$output"
+  }
+
+  _bbdl_fzf() {
+    local prompt="$1"
+
+    fzf \
+      --height=80% \
+      --reverse \
+      --prompt="$prompt> " \
+      --delimiter=$'\t' \
+      --with-nth=1,2,3
+  }
+
+  _bbdl_stream_choices() {
+    local query="$1"
+    local url="$2"
+    local cache_tmp="${3-}"
+    local show_progress="${4:-0}"
+    local body page page_count fetched total total_text
+
+    if [[ -n "$cache_tmp" ]]; then
+      : > "$cache_tmp" || return 1
+    fi
+
+    page=1
+    fetched=0
+    total=""
+
+    while [[ -n "$url" ]]; do
+      body="$(curl -fsS \
+        -u "$user:$token" \
+        -H "Accept: application/json" \
+        --connect-timeout 15 \
+        --max-time 120 \
+        "$url")" || return 1
+
+      jq -e '.values? // []' >/dev/null <<< "$body" || return 1
+
+      if [[ -n "$cache_tmp" ]]; then
+        jq -c '.values[]?' <<< "$body" >> "$cache_tmp" || return 1
+      fi
+
+      jq -r --arg q "$query" '
+        .values[]?
+        | select(
+          ($q == "")
+          or (((.name // "") | ascii_downcase) | contains($q | ascii_downcase))
+        )
+        | [.name, ((.size // 0) | tostring), (.created_on // ""), (.links.self.href // "")]
+        | @tsv
+      ' <<< "$body" || return 1
+
+      page_count="$(jq '.values | length' <<< "$body")" || return 1
+      fetched=$((fetched + page_count))
+      [[ -z "$total" ]] && total="$(jq -r '.size // empty' <<< "$body")"
+      url="$(jq -r '.next // empty' <<< "$body")" || return 1
+
+      if (( show_progress )); then
+        total_text=""
+        [[ -n "$total" ]] && total_text=" of $total"
+        if (( page == 1 || page % 5 == 0 )) || [[ -z "$url" ]]; then
+          echo "Fetched $fetched$total_text downloads..." >&2
+        fi
+      fi
+
+      page=$((page + 1))
+    done
+
+    if [[ -n "$cache_tmp" ]]; then
+      mv "$cache_tmp" "$cache_file"
+    fi
+  }
+
+  _bbdl_stream_pick() {
+    local query="$1"
+    local url="$2"
+    local cache_tmp="$3"
+    local fifo err_file producer_pid selected fzf_status producer_status
+
+    fifo="$tmpdir/stream.$RANDOM"
+    err_file="$tmpdir/stream.$RANDOM.err"
+    mkfifo "$fifo" || return 1
+
+    (
+      trap - EXIT
+      _bbdl_stream_choices "$query" "$url" "$cache_tmp" 0 > "$fifo"
+    ) 2> "$err_file" &
+    producer_pid=$!
+
+    selected="$(_bbdl_fzf "Download" < "$fifo")"
+    fzf_status=$?
+
+    kill "$producer_pid" 2>/dev/null || true
+    producer_status=0
+    wait "$producer_pid" 2>/dev/null || producer_status=$?
+    rm -f "$fifo"
+
+    if [[ -z "$selected" && "$producer_status" -ne 0 && -s "$err_file" ]]; then
+      grep -v -E 'Broken pipe|writing output failed' "$err_file" >&2 || true
+    fi
+    rm -f "$err_file"
+
+    printf '%s' "$selected"
+    return "$fzf_status"
+  }
+
+  _bbdl_choose_line() {
+    local prompt="$1"
+    local file="$2"
+    local count idx i limit c1 c2 c3 c4
+
+    if [[ ! -s "$file" ]]; then
+      echo "No matches." >&2
+      return 1
+    fi
+
+    if command -v fzf >/dev/null 2>&1; then
+      _bbdl_fzf "$prompt" < "$file"
+      return
+    fi
+
+    count="$(wc -l < "$file" | tr -d '[:space:]')"
+    limit="$count"
+
+    if (( count > 50 )); then
+      echo "Showing first 50 of $count matches. Install fzf for a much better fuzzy picker." >&2
+      limit=50
+    fi
+
+    i=1
+    while IFS=$'\t' read -r c1 c2 c3 c4; do
+      printf '%3d) %-60s %12s %s\n' "$i" "$c1" "$c2" "$c3"
+      ((i++))
+      if (( i > limit )); then
+        break
+      fi
+    done < "$file"
+
+    idx="$(_bbdl_prompt "Pick number")" || return 1
+    [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= count )) || {
+      echo "Invalid selection." >&2
+      return 1
+    }
+
+    sed -n "${idx}p" "$file"
+  }
+
+  _bbdl_cache_state() {
+    local mtime now age
+
+    [[ -s "$cache_file" ]] || {
+      printf '%s' "missing"
+      return 0
+    }
+
+    mtime="$(_bbdl_file_mtime "$cache_file")" || {
+      printf '%s' "stale"
+      return 0
+    }
+    now="$(date +%s)"
+    age=$((now - mtime))
+
+    if (( age <= cache_ttl )); then
+      printf '%s' "fresh"
+    else
+      printf '%s' "stale"
+    fi
+  }
+
+  _bbdl_mark_cache_lock() {
+    local pid="$1"
+
+    (
+      printf '%s\n' "$pid" > "$cache_lock_dir/pid"
+      date +%s > "$cache_lock_dir/started"
+    ) 2>/dev/null || true
+  }
+
+  _bbdl_cache_lock_active() {
+    local pid started now age max_age
+
+    [[ -r "$cache_lock_dir/pid" ]] || return 1
+    IFS= read -r pid < "$cache_lock_dir/pid" || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+
+    max_age="${BBDL_CACHE_LOCK_TTL:-7200}"
+    [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=7200
+
+    if [[ -r "$cache_lock_dir/started" ]]; then
+      IFS= read -r started < "$cache_lock_dir/started" || started=""
+      if [[ "$started" =~ ^[0-9]+$ ]]; then
+        now="$(date +%s)"
+        age=$((now - started))
+        (( age <= max_age )) || return 1
+      fi
+    fi
+
+    kill -0 "$pid" 2>/dev/null
+  }
+
+  _bbdl_clear_cache_lock() {
+    rm -f "$cache_lock_dir/pid" "$cache_lock_dir/started" 2>/dev/null || true
+    rmdir "$cache_lock_dir" 2>/dev/null || true
+  }
+
+  _bbdl_acquire_cache_lock() {
+    mkdir -p "$cache_dir" || return 1
+
+    if mkdir "$cache_lock_dir" 2>/dev/null; then
+      _bbdl_mark_cache_lock "$(_bbdl_current_pid)"
+      return 0
+    fi
+
+    if ! _bbdl_cache_lock_active; then
+      _bbdl_clear_cache_lock
+      if mkdir "$cache_lock_dir" 2>/dev/null; then
+        _bbdl_mark_cache_lock "$(_bbdl_current_pid)"
+        return 0
+      fi
+    fi
+
+    return 1
+  }
+
+  _bbdl_release_cache_lock() {
+    _bbdl_clear_cache_lock
+  }
+
+  _bbdl_start_background_refresh() {
+    local tmp refresh_pid
+
+    (( cache_refresh_started )) && return 0
+    cache_refresh_started=1
+
+    if ! _bbdl_acquire_cache_lock; then
+      echo "Download cache refresh is already running." >&2
+      return 0
+    fi
+
+    echo "Refreshing download cache in the background." >&2
+
+    tmp="${cache_file}.$$.$RANDOM.tmp"
+    (
+      trap '[[ -n "$tmp" ]] && rm -f "$tmp"; _bbdl_release_cache_lock' EXIT
+      if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url 100 "")" "$tmp" 0 0; then
+        mv "$tmp" "$cache_file"
+        tmp=""
+      else
+        rm -f "$tmp"
+        tmp=""
+      fi
+    ) >/dev/null 2>&1 &
+    refresh_pid=$!
+    _bbdl_mark_cache_lock "$refresh_pid"
+  }
+
+  _bbdl_use_cache() {
+    local state
+
+    (( refresh_cache )) && return 1
+    [[ -s "$cache_file" ]] || return 1
+
+    state="$(_bbdl_cache_state)"
+    if [[ "$state" == "stale" ]]; then
+      echo "Using cached downloads for $workspace/$repo; cache is stale." >&2
+      _bbdl_start_background_refresh
+    else
+      echo "Using cached downloads for $workspace/$repo." >&2
+    fi
+
+    return 0
+  }
+
+  _bbdl_refresh_cache_foreground() {
+    local tmp
+
+    mkdir -p "$cache_dir" || return 1
+    tmp="${cache_file}.$$.$RANDOM.tmp"
+
+    echo "Fetching downloads for $workspace/$repo..." >&2
+    if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url 100 "")" "$tmp" 0 1; then
+      mv "$tmp" "$cache_file"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+
+    if [[ ! -s "$cache_file" ]]; then
+      echo "No downloads found for $workspace/$repo" >&2
+      return 1
+    fi
+  }
+
+  _bbdl_download_file() {
+    local name="$1"
+    local href="$2"
+    local dest_in out yn
+
+    if [[ -z "$href" ]]; then
+      echo "Selected download has no download URL." >&2
+      return 1
+    fi
+
+    echo "Selected: $name" >&2
+    dest_in="$(_bbdl_prompt "Download directory" "$dest_dir")" || return 1
+    dest_dir="$(_bbdl_expand_path "$dest_in")"
+    mkdir -p "$dest_dir" || return 1
+
+    out="${dest_dir%/}/${name##*/}"
+
+    if [[ -e "$out" ]]; then
+      yn="$(_bbdl_prompt "File exists. Overwrite $out?" "N")" || return 1
+      [[ "$yn" =~ ^[Yy]$ ]] || {
+        echo "Skipped." >&2
+        return 0
+      }
+    fi
+
+    echo "Downloading to: $out" >&2
+    curl -fL \
+      --progress-bar \
+      --connect-timeout 15 \
+      --max-time 0 \
+      -u "$user:$token" \
+      "$href" \
+      -o "$out" || return 1
+
+    echo "Done: $out" >&2
+  }
+
+  if [[ -z "$repo" ]]; then
+    local ws_in repo_choices selected_repo repo_name
+    ws_in="$(_bbdl_prompt "Workspace" "$workspace")" || return 1
+    workspace="$ws_in"
+
+    echo "Fetching repositories for workspace: $workspace" >&2
+    repo_choices="$tmpdir/repos.tsv"
+    _bbdl_api_values "https://api.bitbucket.org/2.0/repositories/${workspace}?pagelen=100&sort=name" \
+      | jq -r '[.slug, (.name // .slug), (.updated_on // "")] | @tsv' \
+      > "$repo_choices" || return 1
+
+    selected_repo="$(_bbdl_choose_line "Repo" "$repo_choices")" || return 1
+    IFS=$'\t' read -r repo repo_name _ <<< "$selected_repo"
+  fi
+
+  echo "Selected repo: $workspace/$repo" >&2
+
+  cache_root="${BBDL_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/bbdl}"
+  cache_ttl="${BBDL_CACHE_TTL:-${BITBUCKET_DOWNLOAD_CACHE_TTL:-3600}}"
+  [[ "$cache_ttl" =~ ^[0-9]+$ ]] || cache_ttl=3600
+  cache_workspace="$(_bbdl_cache_key "$workspace")"
+  cache_repo="$(_bbdl_cache_key "$repo")"
+  cache_dir="${cache_root%/}/${cache_workspace}/${cache_repo}"
+  cache_file="${cache_dir}/downloads.jsonl"
+  cache_lock_dir="${cache_dir}/refresh.lock"
+
+  if [[ -n "$filename" ]]; then
+    local direct_href
+    direct_href="$(_bbdl_download_url "$filename")" || return 1
+    _bbdl_download_file "$filename" "$direct_href"
+    return
+  fi
+
+  while true; do
+    local mode n query choices selected name size created href again pagelen tmp_limited cache_tmp
+    selected=""
+
+    echo >&2
+    echo "Find a download:" >&2
+    echo "  1) Newest N downloads" >&2
+    echo "  2) Search filenames" >&2
+    echo "  3) Show all, newest first" >&2
+    mode="$(_bbdl_prompt "Choice" "1")" || return 1
+
+    choices="$tmpdir/download_choices.tsv"
+    : > "$choices"
+
+    case "$mode" in
+      1)
+        n="$(_bbdl_prompt "How many newest downloads?" "25")" || return 1
+        [[ "$n" =~ ^[0-9]+$ ]] || n=25
+        (( n > 0 )) || n=25
+        if _bbdl_use_cache; then
+          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" "$n" || return 1
+        else
+          pagelen="$n"
+          (( pagelen < 10 )) && pagelen=10
+          (( pagelen > 100 )) && pagelen=100
+          tmp_limited="$tmpdir/newest.jsonl"
+          echo "Fetching newest $n downloads..." >&2
+          if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url "$pagelen" "-created_on")" "$tmp_limited" "$n" 1; then
+            _bbdl_render_choices_from_jsonl "$tmp_limited" "$choices" "$n" || return 1
+            _bbdl_start_background_refresh
+          else
+            echo "Newest-only request failed; fetching all downloads so they can be sorted locally." >&2
+            _bbdl_refresh_cache_foreground || return 1
+            _bbdl_render_choices_from_jsonl "$cache_file" "$choices" "$n" || return 1
+          fi
+        fi
+        ;;
+      2)
+        query="$(_bbdl_prompt "Filename search")" || return 1
+        if _bbdl_use_cache; then
+          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" 0 "$query" || return 1
+        elif command -v fzf >/dev/null 2>&1; then
+          mkdir -p "$cache_dir" || return 1
+          cache_tmp="${cache_file}.$$.$RANDOM.tmp"
+          echo "Streaming filename matches from Bitbucket. fzf will update as pages arrive." >&2
+          selected="$(_bbdl_stream_pick "$query" "$(_bbdl_downloads_url 100 "")" "$cache_tmp")" || selected=""
+          rm -f "$cache_tmp"
+          [[ -n "$selected" ]] || {
+            echo "No selection." >&2
+            continue
+          }
+        else
+          echo "Fetching downloads and searching filenames as pages arrive..." >&2
+          _bbdl_refresh_cache_foreground || return 1
+          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" 0 "$query" || return 1
+        fi
+        ;;
+      3)
+        if ! _bbdl_use_cache; then
+          _bbdl_refresh_cache_foreground || return 1
+        fi
+        _bbdl_render_choices_from_jsonl "$cache_file" "$choices" || return 1
+        ;;
+      *)
+        echo "Invalid choice." >&2
+        continue
+        ;;
+    esac
+
+    if [[ -z "$selected" && ! -s "$choices" ]]; then
+      echo "No matches." >&2
+      continue
+    fi
+
+    if [[ -z "$selected" ]]; then
+      selected="$(_bbdl_choose_line "Download" "$choices")" || return 1
+    fi
+    IFS=$'\t' read -r name size created href <<< "$selected"
+
+    _bbdl_download_file "$name" "$href" || return 1
+
+    again="$(_bbdl_prompt "Download another from $workspace/$repo?" "N")" || return 1
+    [[ "$again" =~ ^[Yy]$ ]] || break
+  done
+)
