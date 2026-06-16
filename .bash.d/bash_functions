@@ -256,6 +256,29 @@ revertpath() {
     fi
 }
 
+clrzi() {
+    local -a files
+    local reply
+
+    files=( *Zone.Identifier )
+
+    if [[ ! -e "${files[0]}" ]]; then
+        echo "No Zone.Identifier files found."
+        return 0
+    fi
+
+    printf '%s\n' "${files[@]}"
+    printf 'Remove these Zone.Identifier files? [y/N] '
+    IFS= read -r reply
+
+    if [[ "$reply" == [Yy] || "$reply" == [Yy][Ee][Ss] ]]; then
+        rm -- "${files[@]}"
+    else
+        echo "Aborting"
+        return 1
+    fi
+}
+
 fs() {
     local arg
 

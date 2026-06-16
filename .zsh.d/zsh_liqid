@@ -29,6 +29,73 @@ _liqid_trim() {
   printf '%s' "$1" | awk '{$1=$1}1'
 }
 
+_liqid_prompt() {
+  local prompt="$1"
+  local default="${2-}"
+  local reply
+
+  if [[ -n $default ]]; then
+    printf '%s [%s]: ' "$prompt" "$default" >&2
+  else
+    printf '%s: ' "$prompt" >&2
+  fi
+
+  IFS= read -r reply || return 1
+  printf '%s' "${reply:-$default}"
+}
+
+_liqid_fzf() {
+  local prompt="$1"
+
+  fzf \
+    --height=80% \
+    --reverse \
+    --prompt="$prompt> " \
+    --delimiter=$'\t' \
+    --with-nth=1,2,3,4
+}
+
+_liqid_choose_line() {
+  local prompt="$1"
+  local choices="$2"
+  local count idx i c1 c2 c3 c4 display
+
+  [[ -n $choices ]] || {
+    echo "No choices available." >&2
+    return 1
+  }
+
+  if [[ -t 0 ]] && command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "$choices" | _liqid_fzf "$prompt"
+    return
+  fi
+
+  count="$(printf '%s\n' "$choices" | wc -l | tr -d '[:space:]')"
+
+  i=1
+  while IFS=$'\t' read -r c1 c2 c3 c4; do
+    display="$c1"
+    [[ -n $c2 ]] && display="${display}  ${c2}"
+    [[ -n $c3 ]] && display="${display}  ${c3}"
+    [[ -n $c4 ]] && display="${display}  ${c4}"
+    printf '%3d) %s\n' "$i" "$display" >&2
+    ((i++))
+  done <<< "$choices"
+
+  if command -v fzf >/dev/null 2>&1; then
+    echo "Run from an interactive terminal to use fzf; using numbered selection." >&2
+  else
+    echo "Install fzf for fuzzy search and filtering." >&2
+  fi
+  idx="$(_liqid_prompt "Pick number")" || return 1
+  [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= count )) || {
+    echo "Invalid selection." >&2
+    return 1
+  }
+
+  printf '%s\n' "$choices" | sed -n "${idx}p"
+}
+
 _liqid_docker_username() {
   printf '%s' "${LIQID_DOCKER_USERNAME:-${DOCKER_HUB_USERNAME:-${DOCKER_USERNAME:-}}}"
 }
@@ -45,8 +112,26 @@ _liqid_dev_container() {
   printf '%s' "${LIQID_DEV_CONTAINER:-dev}"
 }
 
-_liqid_local_tags() {
-  docker images "$(_liqid_docker_image)" --format '{{.Tag}}'
+_liqid_dev_code_dir() {
+  printf '%s' "${LIQID_DEV_CODE_DIR:-$HOME/code}"
+}
+
+_liqid_devsync_bin() {
+  printf '%s' "${LIQID_DEVSYNC_BIN:-$HOME/bin/devsync}"
+}
+
+_liqid_local_tag_choices() {
+  docker images "$(_liqid_docker_image)" --format '{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}' \
+    | awk -F '\t' '$1 != "" && $1 != "<none>"'
+}
+
+_liqid_docker_ready() {
+  _liqid_need docker || return 1
+
+  docker ps >/dev/null 2>&1 || {
+    echo "Docker is installed but not reachable. Check that Docker is running and your user can access the Docker socket." >&2
+    return 1
+  }
 }
 
 _liqid_remote_tags() {
@@ -73,40 +158,42 @@ _liqid_remote_tags() {
     "https://registry-1.docker.io/v2/${image}/tags/list" \
     | jq -r '.tags[]' 2>/dev/null \
     | grep -E "$tag_pattern" \
-    | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n
+    | sort -t. -k1,1nr -k2,2nr -k3,3nr -k4,4nr
 }
 
 _liqid_prompt_for_tag() {
-  local choice
-
-  printf 'Enter tag manually: ' >&2
-  IFS= read -r choice
-  printf '%s' "$choice"
+  _liqid_prompt "Enter tag manually"
 }
 
 _liqid_select_local_tag() {
-  local image make_tag tag
-  local -a tags
+  local image choices selected
 
   image="$(_liqid_docker_image)"
+  choices="$(_liqid_local_tag_choices)"
 
-  while IFS= read -r tag; do
-    [[ -n $tag ]] && tags+=("$tag")
-  done < <(_liqid_local_tags)
+  if [[ -n $choices ]]; then
+    choices="${choices}"$'\n'"Pull new tag"$'\t'"Fetch a tag from Docker Hub"
+  else
+    choices="Pull new tag"$'\t'"Fetch a tag from Docker Hub"
+  fi
 
-  echo "Local ${image} tags:" >&2
-  select make_tag in "${tags[@]}" "Pull new tag"; do
-    [[ -n $make_tag ]] && {
-      printf '%s' "$make_tag"
-      return 0
-    }
-    echo "Invalid selection" >&2
-  done
+  selected="$(_liqid_choose_line "Local ${image} tag" "$choices")" || return 1
+  printf '%s' "${selected%%$'\t'*}"
 }
 
 _liqid_select_remote_tag() {
-  local remote_output remote_status choice tag
-  local -a remote
+  local remote_output remote_status choices selected tag
+
+  _liqid_need curl || {
+    echo "Falling back to manual tag entry." >&2
+    _liqid_prompt_for_tag
+    return 0
+  }
+  _liqid_need jq || {
+    echo "Install jq to list/filter remote tags. Falling back to manual tag entry." >&2
+    _liqid_prompt_for_tag
+    return 0
+  }
 
   remote_output="$(_liqid_remote_tags)"
   remote_status=$?
@@ -124,49 +211,432 @@ _liqid_select_remote_tag() {
     return 0
   fi
 
+  choices=""
   while IFS= read -r tag; do
-    [[ -n $tag ]] && remote+=("$tag")
+    [[ -n $tag ]] && choices="${choices}${tag}"$'\t'"remote"$'\n'
   done <<< "$remote_output"
+  choices="${choices%$'\n'}"
 
-  if (( ${#remote[@]} == 0 )); then
+  if [[ -z $choices ]]; then
     echo "No matching remote tags retrieved." >&2
     _liqid_prompt_for_tag
     return 0
   fi
 
-  echo "Available remote tags:" >&2
-  select choice in "${remote[@]}"; do
-    [[ -n $choice ]] && {
-      printf '%s' "$choice"
-      return 0
-    }
-    echo "Invalid selection" >&2
-  done
+  selected="$(_liqid_choose_line "Remote $(_liqid_docker_image) tag" "$choices")" || return 1
+  printf '%s' "${selected%%$'\t'*}"
 }
 
-_liqid_dev_make() {
-  local image container make_tag choice tag
+_liqid_container_exists() {
+  docker container inspect "$1" >/dev/null 2>&1
+}
 
-  _liqid_need docker || return 1
-  _liqid_need jq || {
-    echo "Install jq to list/filter tags." >&2
+_liqid_container_running() {
+  [[ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]
+}
+
+_liqid_container_host_pid() {
+  docker container inspect -f '{{.State.Pid}}' "$1" 2>/dev/null
+}
+
+_liqid_container_id() {
+  docker container inspect -f '{{.Id}}' "$1" 2>/dev/null
+}
+
+_liqid_container_cgroup_path() {
+  local container="$1"
+  local pid cgroup
+
+  pid="$(_liqid_container_host_pid "$container")" || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )) || return 1
+
+  cgroup="$(awk -F: '$1 == "0" {print $3}' "/proc/$pid/cgroup" 2>/dev/null)" || return 1
+  [[ -n $cgroup ]] || return 1
+
+  printf '/sys/fs/cgroup%s' "$cgroup"
+}
+
+_liqid_confirm() {
+  local prompt="$1"
+  local reply
+
+  [[ -t 0 ]] || return 1
+  reply="$(_liqid_prompt "$prompt" "n")" || return 1
+
+  case "$reply" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_liqid_dev_confirm_stuck_cleanup() {
+  local container="$1"
+  local pid
+
+  case "${LIQID_DEV_STUCK_CLEANUP:-}" in
+    1|true|TRUE|yes|YES|y|Y) return 0 ;;
+  esac
+
+  pid="$(_liqid_container_host_pid "$container" 2>/dev/null || true)"
+  cat >&2 <<EOF
+Docker could not stop '$container' cleanly.
+This usually means Docker/containerd did not receive the container exit event because a process inside the container is stuck in uninterruptible kernel sleep (D state).
+The thorough cleanup will try cgroup.kill and may SIGKILL this container's matching containerd shim, then retry docker rm -f.
+EOF
+  [[ -n $pid ]] && echo "Docker-reported host pid: $pid" >&2
+
+  if [[ ! -t 0 ]]; then
+    echo "Run from an interactive terminal to approve thorough cleanup, or set LIQID_DEV_STUCK_CLEANUP=1." >&2
+    return 1
+  fi
+
+  _liqid_confirm "Continue with thorough cleanup?"
+}
+
+_liqid_sudo_kill_pid() {
+  local pid="$1"
+
+  command -v sudo >/dev/null 2>&1 || return 1
+
+  if [[ -t 0 ]]; then
+    sudo kill -KILL "$pid"
+  else
+    sudo -n kill -KILL "$pid" 2>/dev/null
+  fi
+}
+
+_liqid_kill_pid() {
+  local pid="$1"
+  local label="$2"
+
+  [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )) || return 1
+  [[ -d "/proc/$pid" ]] || return 0
+
+  echo "SIGKILL ${label} pid $pid..." >&2
+  kill -KILL "$pid" 2>/dev/null || _liqid_sudo_kill_pid "$pid" || return 1
+  sleep 1
+  [[ ! -d "/proc/$pid" ]]
+}
+
+_liqid_kill_cgroup() {
+  local cgroup_path="$1"
+  local kill_file="${cgroup_path}/cgroup.kill"
+
+  [[ -e $kill_file ]] || return 1
+
+  echo "Killing container cgroup..." >&2
+  if [[ -w $kill_file ]]; then
+    printf '1' > "$kill_file"
+  elif command -v sudo >/dev/null 2>&1; then
+    if [[ -t 0 ]]; then
+      printf '1\n' | sudo tee "$kill_file" >/dev/null
+    else
+      printf '1\n' | sudo -n tee "$kill_file" >/dev/null 2>&1
+    fi
+  else
+    return 1
+  fi
+  sleep 1
+}
+
+_liqid_kill_container_shim() {
+  local container="$1"
+  local pid ppid cid cmdline
+
+  pid="$(_liqid_container_host_pid "$container" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )) || return 1
+  [[ -r "/proc/$pid/status" ]] || return 1
+
+  ppid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"
+  [[ "$ppid" =~ ^[0-9]+$ ]] && (( ppid > 1 )) || return 1
+  [[ -r "/proc/$ppid/cmdline" ]] || return 1
+
+  cid="$(_liqid_container_id "$container")" || return 1
+  cmdline="$(tr '\0' ' ' < "/proc/$ppid/cmdline" 2>/dev/null)" || return 1
+  [[ $cmdline == *containerd-shim*"$cid"* ]] || return 1
+
+  _liqid_kill_pid "$ppid" "containerd shim"
+}
+
+_liqid_dev_thorough_cleanup() {
+  local container="$1"
+  local cgroup_path="$2"
+  local pid
+
+  if ! _liqid_container_uses_liqid_image "$container"; then
+    echo "Refusing thorough cleanup for '$container': image does not match $(_liqid_docker_image)." >&2
+    return 1
+  fi
+
+  docker kill --signal=KILL "$container" >/dev/null 2>&1 || true
+  pid="$(_liqid_container_host_pid "$container" 2>/dev/null || true)"
+  [[ -n $pid ]] && _liqid_kill_pid "$pid" "container init" || true
+  [[ -n $cgroup_path ]] && _liqid_kill_cgroup "$cgroup_path" || true
+  pid="$(_liqid_container_host_pid "$container" 2>/dev/null || true)"
+  [[ -n $pid ]] && _liqid_kill_pid "$pid" "container init" || true
+  _liqid_kill_container_shim "$container" || true
+  [[ -n $cgroup_path ]] && _liqid_kill_cgroup "$cgroup_path" || true
+}
+
+_liqid_cgroup_procs() {
+  local cgroup_path="$1"
+  local procs
+
+  [[ -r "${cgroup_path}/cgroup.procs" ]] || return 1
+  procs="$(tr '\n' ' ' < "${cgroup_path}/cgroup.procs" 2>/dev/null)" || return 1
+  _liqid_trim "$procs"
+}
+
+_liqid_dev_remove_succeeded() {
+  local container="$1"
+  local cgroup_path="$2"
+  local procs ps_pids
+
+  [[ -n $cgroup_path ]] || return 0
+
+  procs="$(_liqid_cgroup_procs "$cgroup_path")" || return 0
+  [[ -z $procs ]] && return 0
+  ps_pids="${procs// /,}"
+
+  echo "Docker removed '$container', but cgroup still contains pids: $procs" >&2
+  ps -p "$ps_pids" -o pid,ppid,stat,comm,args >&2 2>/dev/null || true
+  if ps -p "$ps_pids" -o stat= 2>/dev/null | awk '$1 ~ /D/ { found = 1 } END { exit found ? 0 : 1 }'; then
+    echo "A process with STAT D is stuck in uninterruptible kernel sleep and cannot be killed by Docker, kill, or sudo kill." >&2
+  else
+    echo "Some container processes remain after Docker removal." >&2
+  fi
+  echo "On WSL, save your work and run 'wsl --shutdown' from PowerShell to clear the remaining kernel-stuck process." >&2
+  return 1
+}
+
+_liqid_dev_remove_container() {
+  local container="$1"
+  local cgroup_path rm_output stuck_cleanup
+
+  stuck_cleanup=0
+  cgroup_path="$(_liqid_container_cgroup_path "$container" 2>/dev/null || true)"
+
+  if _liqid_container_running "$container"; then
+    echo "Stopping $container..." >&2
+    if ! docker stop --time 10 "$container" >/dev/null; then
+      _liqid_dev_confirm_stuck_cleanup "$container" || return 1
+      stuck_cleanup=1
+      _liqid_dev_thorough_cleanup "$container" "$cgroup_path" || true
+    fi
+  fi
+
+  echo "Removing $container..." >&2
+  if rm_output="$(docker rm "$container" 2>&1)"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+  if ! _liqid_container_exists "$container"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+
+  if rm_output="$(docker rm -f "$container" 2>&1)"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+  if ! _liqid_container_exists "$container"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+
+  if [[ $stuck_cleanup -eq 0 ]]; then
+    [[ -n $rm_output ]] && printf '%s\n' "$rm_output" >&2
+    _liqid_dev_confirm_stuck_cleanup "$container" || return 1
+  fi
+
+  _liqid_dev_thorough_cleanup "$container" "$cgroup_path" || true
+  if rm_output="$(docker rm -f "$container" 2>&1)"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+  if ! _liqid_container_exists "$container"; then
+    _liqid_dev_remove_succeeded "$container" "$cgroup_path"
+    return $?
+  fi
+
+  [[ -n $rm_output ]] && printf '%s\n' "$rm_output" >&2
+  echo "Unable to remove '$container'. Docker may have stale runtime state; restart Docker and retry 'liqid_dev stop $container'." >&2
+  return 1
+}
+
+_liqid_dev_container_state() {
+  local container="$1"
+  local state image
+
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '%s' "docker missing"
+    return 0
+  fi
+
+  state="$(docker container inspect -f '{{.State.Status}}' "$container" 2>/dev/null)" || {
+    if docker ps >/dev/null 2>&1; then
+      printf '%s' "not created"
+    else
+      printf '%s' "docker unavailable"
+    fi
+    return 0
+  }
+
+  image="$(docker container inspect -f '{{.Config.Image}}' "$container" 2>/dev/null)"
+  printf '%s' "$state"
+  [[ -n $image ]] && printf '  %s' "$image"
+}
+
+_liqid_dev_container_name() {
+  local container="${1:-$(_liqid_dev_container)}"
+
+  [[ -n $container ]] || {
+    echo "Container name cannot be empty." >&2
     return 1
   }
 
-  image="$(_liqid_docker_image)"
-  container="$(_liqid_dev_container)"
+  printf '%s' "$container"
+}
 
-  if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
-    docker stop "$container" >/dev/null
-    docker rm "$container" >/dev/null
+_liqid_dev_single_container_arg() {
+  local usage="$1"
+  shift
+
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: $usage" >&2
+    return 1
   fi
+
+  _liqid_dev_container_name "${1-}"
+}
+
+_liqid_container_uses_liqid_image() {
+  local container="$1"
+  local image repo
+
+  repo="$(_liqid_docker_image)"
+  image="$(docker container inspect -f '{{.Config.Image}}' "$container" 2>/dev/null)" || return 1
+
+  [[ "$image" == "$repo" || "$image" == "$repo:"* || "$image" == "$repo@"* ]]
+}
+
+_liqid_dev_container_choices() {
+  local image
+
+  image="$(_liqid_docker_image)"
+
+  docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' \
+    | awk -F '\t' -v image="$image" '
+      $2 == image || index($2, image ":") == 1 || index($2, image "@") == 1 { print }
+    '
+}
+
+_liqid_dev_require_container() {
+  local container="$1"
+
+  _liqid_docker_ready || return 1
+
+  if ! _liqid_container_exists "$container"; then
+    echo "Container '$container' does not exist. Run 'liqid_dev make $container' first." >&2
+    return 1
+  fi
+
+  if ! _liqid_container_running "$container"; then
+    echo "Starting stopped Liqid dev container '$container'..." >&2
+    docker start "$container" >/dev/null || return 1
+  fi
+}
+
+_liqid_dev_status() {
+  local container image state choices name c_image status
+
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: liqid_dev status [container]" >&2
+    return 1
+  fi
+
+  _liqid_docker_ready || return 1
+
+  image="$(_liqid_docker_image)"
+  printf 'Image repo: %s\n' "$image"
+
+  if [[ $# -eq 1 ]]; then
+    container="$(_liqid_dev_container_name "$1")" || return 1
+    printf 'Container: %s\n' "$container"
+
+    if ! _liqid_container_exists "$container"; then
+      printf 'State: not created\n'
+      return 0
+    fi
+
+    state="$(docker container inspect -f '{{.State.Status}}' "$container" 2>/dev/null)"
+    c_image="$(docker container inspect -f '{{.Config.Image}}' "$container" 2>/dev/null)"
+    printf 'State: %s\n' "${state:-unknown}"
+    printf 'Image: %s\n' "${c_image:-unknown}"
+    return 0
+  fi
+
+  choices="$(_liqid_dev_container_choices)"
+  if [[ -z $choices ]]; then
+    printf 'Containers: none\n'
+    printf 'Default container: %s\n' "$(_liqid_dev_container)"
+    return 0
+  fi
+
+  printf 'Containers:\n'
+  while IFS=$'\t' read -r name c_image status; do
+    [[ -n $name ]] && printf '  %-24s %-32s %s\n' "$name" "$c_image" "$status"
+  done <<< "$choices"
+}
+
+_liqid_dev_command_choices() {
+  local container state
+
+  container="$(_liqid_dev_container)"
+  state="$(_liqid_dev_container_state "$container")"
+
+  cat <<EOF
+make	Build and start a fresh Liqid dev container	$state
+enter	Open an interactive shell	$state
+sync	Run devsync inside the container	$state
+exec	Run a command inside the container	$state
+stop	Stop and remove a Liqid dev container	$state
+status	Show container state and image	$state
+help	Show usage
+EOF
+}
+
+_liqid_select_dev_command() {
+  local selected
+
+  selected="$(_liqid_choose_line "Liqid dev" "$(_liqid_dev_command_choices)")" || return 1
+  printf '%s' "${selected%%$'\t'*}"
+}
+
+_liqid_dev_make() {
+  local image container make_tag choice tag code_dir devsync_bin
+  local -a docker_args
+
+  _liqid_docker_ready || return 1
+
+  image="$(_liqid_docker_image)"
+  container="$(_liqid_dev_container_name "${1-}")" || return 1
+  code_dir="$(_liqid_dev_code_dir)"
+  devsync_bin="$(_liqid_devsync_bin)"
+
+  [[ -d $code_dir ]] || {
+    echo "Code directory not found: $code_dir" >&2
+    return 1
+  }
 
   make_tag="$(_liqid_select_local_tag)" || return 1
 
   if [[ $make_tag == "Pull new tag" ]]; then
-    echo "Fetching remote tags for ${image}..."
+    echo "Fetching remote tags for ${image}..." >&2
     choice="$(_liqid_select_remote_tag)" || return 1
-    [[ -n $choice ]] && docker pull "${image}:${choice}"
+    if [[ -n $choice ]]; then
+      docker pull "${image}:${choice}" || return 1
+    fi
   fi
 
   tag="${choice:-$make_tag}"
@@ -175,56 +645,187 @@ _liqid_dev_make() {
     return 1
   }
 
-  docker run -d \
-    --name "$container" \
-    --network host \
-    -v "$HOME/code":/mnt/code \
-    -v "$HOME/.ssh":/root/.ssh:ro \
-    -v "$HOME/bin/devsync":/usr/local/bin/devsync:ro \
-    "${image}:${tag}"
+  if _liqid_container_exists "$container"; then
+    echo "Replacing existing Liqid dev container '$container'..." >&2
+    _liqid_dev_remove_container "$container" || return 1
+  fi
+
+  docker_args=(
+    -d
+    --name "$container"
+    --network host
+    --label "liqid.dev=true"
+    --label "liqid.dev.image=${image}"
+    -v "${code_dir}:/mnt/code"
+  )
+
+  if [[ -d "$HOME/.ssh" ]]; then
+    docker_args+=(-v "$HOME/.ssh:/root/.ssh:ro")
+  fi
+
+  if [[ -f $devsync_bin ]]; then
+    docker_args+=(-v "$devsync_bin:/usr/local/bin/devsync:ro")
+  else
+    echo "devsync not found at $devsync_bin; 'liqid_dev sync' may fail." >&2
+  fi
+
+  echo "Starting ${image}:${tag} as ${container}..." >&2
+  docker run "${docker_args[@]}" "${image}:${tag}"
+}
+
+_liqid_dev_exec() {
+  local container cmd
+
+  container="$(_liqid_dev_container)"
+
+  case "${1-}" in
+    -c|--container|--name)
+      shift
+      [[ $# -gt 0 ]] || {
+        echo "Missing container name." >&2
+        return 1
+      }
+      container="$(_liqid_dev_container_name "$1")" || return 1
+      shift
+      ;;
+    --)
+      shift
+      ;;
+    *)
+      if [[ $# -gt 1 && "${2-}" == "--" ]]; then
+        container="$(_liqid_dev_container_name "$1")" || return 1
+        shift 2
+      elif [[ $# -gt 0 ]] && _liqid_container_exists "$1"; then
+        container="$(_liqid_dev_container_name "$1")" || return 1
+        shift
+      fi
+      ;;
+  esac
+
+  _liqid_dev_require_container "$container" || return 1
+  if [[ $# -eq 0 ]]; then
+    cmd="$(_liqid_prompt "Command")" || return 1
+    [[ -n $cmd ]] || {
+      echo "No command provided." >&2
+      return 1
+    }
+    set -- "$cmd"
+  fi
+
+  docker exec -it "$container" bash -lc "$*"
+}
+
+_liqid_dev_stop() {
+  local image container choices selected name c_image status failed
+  local -a containers
+
+  _liqid_docker_ready || return 1
+
+  image="$(_liqid_docker_image)"
+
+  if [[ $# -eq 0 ]]; then
+    choices="$(_liqid_dev_container_choices)"
+    [[ -n $choices ]] || {
+      echo "No ${image} containers found." >&2
+      return 0
+    }
+
+    selected="$(
+      _liqid_choose_line \
+        "Stop Liqid container" \
+        "All matching containers"$'\t'"stop and remove every ${image} container"$'\n'"$choices"
+    )" || return 1
+    container="${selected%%$'\t'*}"
+
+    if [[ $container == "All matching containers" ]]; then
+      while IFS=$'\t' read -r name c_image status; do
+        [[ -n $name ]] && containers+=("$name")
+      done <<< "$choices"
+    else
+      containers+=("$container")
+    fi
+  else
+    containers=("$@")
+  fi
+
+  failed=0
+  for container in "${containers[@]}"; do
+    if ! _liqid_container_exists "$container"; then
+      echo "Container '$container' does not exist." >&2
+      failed=1
+      continue
+    fi
+
+    if ! _liqid_container_uses_liqid_image "$container"; then
+      c_image="$(docker container inspect -f '{{.Config.Image}}' "$container" 2>/dev/null)"
+      echo "Refusing to remove '$container': image '${c_image:-unknown}' does not match ${image}." >&2
+      failed=1
+      continue
+    fi
+
+    _liqid_dev_remove_container "$container" || {
+      failed=1
+      continue
+    }
+  done
+
+  return "$failed"
 }
 
 liqid_dev() {
   local cmd container
-  local -a cmds
 
   _liqid_load_dotfiles_env
 
-  cmds=(make enter sync exec help)
-  container="$(_liqid_dev_container)"
-
   if [[ $# -eq 0 ]]; then
-    echo "Select Liqid dev command:"
-    select cmd in "${cmds[@]}"; do
-      [[ -n $cmd ]] && set -- "$cmd" && break
-      echo "Invalid selection" >&2
-    done
+    cmd="$(_liqid_select_dev_command)" || return 1
+    set -- "$cmd"
   fi
 
   case "$1" in
     make)
-      _liqid_dev_make
+      shift
+      container="$(_liqid_dev_single_container_arg "liqid_dev make [container]" "$@")" || return 1
+      _liqid_dev_make "$container"
       ;;
     enter)
+      shift
+      container="$(_liqid_dev_single_container_arg "liqid_dev enter [container]" "$@")" || return 1
+      _liqid_dev_require_container "$container" || return 1
       docker exec -it "$container" bash --login -i
       ;;
     sync)
+      shift
+      container="$(_liqid_dev_single_container_arg "liqid_dev sync [container]" "$@")" || return 1
+      _liqid_dev_require_container "$container" || return 1
       docker exec -it "$container" bash -lc devsync
       ;;
     exec)
       shift
-      docker exec -it "$container" bash -lc "$*"
+      _liqid_dev_exec "$@"
+      ;;
+    stop|rm|remove)
+      shift
+      _liqid_dev_stop "$@"
+      ;;
+    status)
+      shift
+      _liqid_dev_status "$@"
       ;;
     help|*)
       cat <<EOF
-Usage: liqid_dev <command>
+Usage: liqid_dev <command> [container]
 
 Commands:
-  make    Build and start a fresh Liqid dev container
-  enter   Exec into the Liqid dev container with an interactive bash shell
-  sync    Run devsync inside the Liqid dev container
-  exec    Run an arbitrary command inside the Liqid dev container
-  help    Show this message
+  make [container]          Build and start a fresh Liqid dev container
+  enter [container]         Exec into a Liqid dev container with an interactive bash shell
+  sync [container]          Run devsync inside a Liqid dev container
+  exec [container] -- CMD   Run an arbitrary command inside a Liqid dev container
+  stop [container ...]      Stop and remove selected Liqid dev containers
+  status [container]        Show Liqid dev container state and image
+  help                      Show this message
+
+Default container: $(_liqid_dev_container)
 EOF
       ;;
   esac
