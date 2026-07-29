@@ -120,6 +120,10 @@ _liqid_devsync_bin() {
   printf '%s' "${LIQID_DEVSYNC_BIN:-$HOME/bin/devsync}"
 }
 
+_liqid_dev_network() {
+  printf '%s' "${LIQID_DEV_NETWORK:-host}"
+}
+
 _liqid_local_tag_choices() {
   docker images "$(_liqid_docker_image)" --format '{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}' \
     | awk -F '\t' '$1 != "" && $1 != "<none>"'
@@ -460,7 +464,7 @@ _liqid_dev_remove_container() {
   fi
 
   [[ -n $rm_output ]] && printf '%s\n' "$rm_output" >&2
-  echo "Unable to remove '$container'. Docker may have stale runtime state; restart Docker and retry 'liqid_dev stop $container'." >&2
+  echo "Unable to remove '$container'. Docker may have stale runtime state; restart Docker and retry 'liqid_dev rm $container'." >&2
   return 1
 }
 
@@ -495,7 +499,20 @@ _liqid_dev_container_name() {
     return 1
   }
 
+  [[ "$container" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+    echo "Invalid container name '$container'. Use letters, numbers, dots, underscores, or dashes." >&2
+    return 1
+  }
+
   printf '%s' "$container"
+}
+
+_liqid_dev_default_container_for_tag() {
+  local tag="$1"
+  local safe
+
+  safe="$(printf '%s' "$tag" | tr -c '[:alnum:]_.-' '-' | sed 's/^-*//; s/-*$//')"
+  printf 'liqid-%s' "${safe:-dev}"
 }
 
 _liqid_dev_single_container_arg() {
@@ -525,10 +542,69 @@ _liqid_dev_container_choices() {
 
   image="$(_liqid_docker_image)"
 
-  docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' \
-    | awk -F '\t' -v image="$image" '
-      $2 == image || index($2, image ":") == 1 || index($2, image "@") == 1 { print }
-    '
+  {
+    docker ps -a --filter "label=liqid.dev=true" --format '{{.Names}}\t{{.Image}}\t{{.Label "liqid.dev.tag"}}\t{{.Status}}'
+    docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' \
+      | awk -F '\t' -v image="$image" '
+        $2 == image || index($2, image ":") == 1 || index($2, image "@") == 1 {
+          tag = ""
+          if (index($2, image ":") == 1) {
+            tag = substr($2, length(image) + 2)
+          }
+          print $1 "\t" $2 "\t" tag "\t" $3
+        }
+      '
+  } | awk -F '\t' -v image="$image" '
+    NF && !seen[$1]++ {
+      tag = $3
+      if (tag == "" || tag == "<no value>") {
+        if (index($2, image ":") == 1) {
+          tag = substr($2, length(image) + 2)
+        }
+      }
+      print $1 "\t" $2 "\t" tag "\t" $4
+    }
+  '
+}
+
+_liqid_dev_select_container() {
+  local prompt="${1:-Liqid container}"
+  local choices selected
+
+  choices="$(_liqid_dev_container_choices)"
+  [[ -n $choices ]] || {
+    echo "No Liqid dev containers found. Run 'liqid_dev make --name NAME' first." >&2
+    return 1
+  }
+
+  selected="$(_liqid_choose_line "$prompt" "$choices")" || return 1
+  _liqid_dev_container_name "${selected%%$'\t'*}"
+}
+
+_liqid_dev_select_containers() {
+  local prompt="$1"
+  local all_label="$2"
+  local all_description="$3"
+  local choices selected container name c_image tag status
+
+  choices="$(_liqid_dev_container_choices)"
+  [[ -n $choices ]] || return 1
+
+  if [[ -n $all_label ]]; then
+    selected="$(_liqid_choose_line "$prompt" "${all_label}"$'\t'"${all_description}"$'\n'"$choices")" || return 1
+  else
+    selected="$(_liqid_choose_line "$prompt" "$choices")" || return 1
+  fi
+
+  container="${selected%%$'\t'*}"
+  if [[ -n $all_label && $container == "$all_label" ]]; then
+    while IFS=$'\t' read -r name c_image tag status; do
+      [[ -n $name ]] && printf '%s\n' "$name"
+    done <<< "$choices"
+  else
+    _liqid_dev_container_name "$container" || return 1
+    printf '%s\n' "$container"
+  fi
 }
 
 _liqid_dev_require_container() {
@@ -548,7 +624,7 @@ _liqid_dev_require_container() {
 }
 
 _liqid_dev_status() {
-  local container image state choices name c_image status
+  local container image state choices name c_image tag status
 
   if [[ $# -gt 1 ]]; then
     echo "Usage: liqid_dev status [container]" >&2
@@ -584,24 +660,21 @@ _liqid_dev_status() {
   fi
 
   printf 'Containers:\n'
-  while IFS=$'\t' read -r name c_image status; do
-    [[ -n $name ]] && printf '  %-24s %-32s %s\n' "$name" "$c_image" "$status"
+  while IFS=$'\t' read -r name c_image tag status; do
+    [[ -n $name ]] && printf '  %-24s %-32s %-16s %s\n' "$name" "$c_image" "${tag:-unknown}" "$status"
   done <<< "$choices"
 }
 
 _liqid_dev_command_choices() {
-  local container state
-
-  container="$(_liqid_dev_container)"
-  state="$(_liqid_dev_container_state "$container")"
-
   cat <<EOF
-make	Build and start a fresh Liqid dev container	$state
-enter	Open an interactive shell	$state
-sync	Run devsync inside the container	$state
-exec	Run a command inside the container	$state
-stop	Stop and remove a Liqid dev container	$state
-status	Show container state and image	$state
+make	Create or replace a named Liqid dev container
+start	Start a stopped Liqid dev container
+enter	Open an interactive shell
+sync	Run devsync inside a container
+exec	Run a command inside a container
+stop	Stop a container without removing it
+rm	Stop and remove a Liqid dev container
+status	Show container state and image
 help	Show usage
 EOF
 }
@@ -614,36 +687,108 @@ _liqid_select_dev_command() {
 }
 
 _liqid_dev_make() {
-  local image container make_tag choice tag code_dir devsync_bin
+  local image container make_tag choice tag code_dir devsync_bin network default_container
+  local pull=0
   local -a docker_args
 
-  _liqid_docker_ready || return 1
-
   image="$(_liqid_docker_image)"
-  container="$(_liqid_dev_container_name "${1-}")" || return 1
   code_dir="$(_liqid_dev_code_dir)"
   devsync_bin="$(_liqid_devsync_bin)"
+  network="$(_liqid_dev_network)"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n|--name|--container|-c)
+        shift
+        [[ $# -gt 0 ]] || {
+          echo "Missing container name." >&2
+          return 1
+        }
+        container="$(_liqid_dev_container_name "$1")" || return 1
+        ;;
+      -t|--tag)
+        shift
+        [[ $# -gt 0 ]] || {
+          echo "Missing image tag." >&2
+          return 1
+        }
+        tag="$1"
+        ;;
+      --pull)
+        pull=1
+        ;;
+      --no-pull)
+        pull=0
+        ;;
+      -h|--help)
+        cat <<EOF
+Usage: liqid_dev make [--name NAME] [--tag TAG] [--pull] [container]
+
+Options:
+  -n, --name NAME       Container name to create
+  -t, --tag TAG         Liqid image tag to run
+      --pull            Pull the selected tag before creating the container
+      --no-pull         Do not force an explicit pull
+EOF
+        return 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Unknown make option: $1" >&2
+        return 1
+        ;;
+      *)
+        if [[ -n $container ]]; then
+          echo "Only one container name may be provided." >&2
+          return 1
+        fi
+        container="$(_liqid_dev_container_name "$1")" || return 1
+        ;;
+    esac
+    shift
+  done
+
+  if [[ $# -gt 0 ]]; then
+    echo "Unexpected make arguments: $*" >&2
+    return 1
+  fi
 
   [[ -d $code_dir ]] || {
     echo "Code directory not found: $code_dir" >&2
     return 1
   }
 
-  make_tag="$(_liqid_select_local_tag)" || return 1
+  _liqid_docker_ready || return 1
 
-  if [[ $make_tag == "Pull new tag" ]]; then
-    echo "Fetching remote tags for ${image}..." >&2
-    choice="$(_liqid_select_remote_tag)" || return 1
-    if [[ -n $choice ]]; then
-      docker pull "${image}:${choice}" || return 1
+  if [[ -z $tag ]]; then
+    make_tag="$(_liqid_select_local_tag)" || return 1
+
+    if [[ $make_tag == "Pull new tag" ]]; then
+      echo "Fetching remote tags for ${image}..." >&2
+      choice="$(_liqid_select_remote_tag)" || return 1
+      if [[ -n $choice ]]; then
+        docker pull "${image}:${choice}" || return 1
+      fi
+      tag="$choice"
+    else
+      tag="$make_tag"
     fi
+  elif [[ $pull -eq 1 ]]; then
+    docker pull "${image}:${tag}" || return 1
   fi
 
-  tag="${choice:-$make_tag}"
   [[ -n $tag ]] || {
     echo "No tag selected." >&2
     return 1
   }
+
+  if [[ -z $container ]]; then
+    default_container="$(_liqid_dev_default_container_for_tag "$tag")"
+    container="$(_liqid_dev_container_name "$(_liqid_prompt "Container name" "$default_container")")" || return 1
+  fi
 
   if _liqid_container_exists "$container"; then
     echo "Replacing existing Liqid dev container '$container'..." >&2
@@ -653,9 +798,10 @@ _liqid_dev_make() {
   docker_args=(
     -d
     --name "$container"
-    --network host
+    --network "$network"
     --label "liqid.dev=true"
     --label "liqid.dev.image=${image}"
+    --label "liqid.dev.tag=${tag}"
     -v "${code_dir}:/mnt/code"
   )
 
@@ -678,29 +824,33 @@ _liqid_dev_exec() {
 
   container="$(_liqid_dev_container)"
 
-  case "${1-}" in
-    -c|--container|--name)
-      shift
-      [[ $# -gt 0 ]] || {
-        echo "Missing container name." >&2
-        return 1
-      }
-      container="$(_liqid_dev_container_name "$1")" || return 1
-      shift
-      ;;
-    --)
-      shift
-      ;;
-    *)
-      if [[ $# -gt 1 && "${2-}" == "--" ]]; then
-        container="$(_liqid_dev_container_name "$1")" || return 1
-        shift 2
-      elif [[ $# -gt 0 ]] && _liqid_container_exists "$1"; then
+  if [[ $# -eq 0 ]]; then
+    container="$(_liqid_dev_select_container "Exec in Liqid container")" || return 1
+  else
+    case "${1-}" in
+      -c|--container|--name)
+        shift
+        [[ $# -gt 0 ]] || {
+          echo "Missing container name." >&2
+          return 1
+        }
         container="$(_liqid_dev_container_name "$1")" || return 1
         shift
-      fi
-      ;;
-  esac
+        ;;
+      --)
+        shift
+        ;;
+      *)
+        if [[ $# -gt 1 && "${2-}" == "--" ]]; then
+          container="$(_liqid_dev_container_name "$1")" || return 1
+          shift 2
+        elif [[ $# -gt 0 ]] && _liqid_container_exists "$1"; then
+          container="$(_liqid_dev_container_name "$1")" || return 1
+          shift
+        fi
+        ;;
+    esac
+  fi
 
   _liqid_dev_require_container "$container" || return 1
   if [[ $# -eq 0 ]]; then
@@ -715,8 +865,98 @@ _liqid_dev_exec() {
   docker exec -it "$container" bash -lc "$*"
 }
 
+_liqid_dev_start() {
+  local container choices failed
+  local -a containers
+
+  _liqid_docker_ready || return 1
+
+  if [[ $# -eq 0 ]]; then
+    choices="$(_liqid_dev_select_containers "Start Liqid container" "All matching containers" "start every Liqid dev container")" || {
+      echo "No Liqid dev containers found." >&2
+      return 0
+    }
+    while IFS= read -r container; do
+      [[ -n $container ]] && containers+=("$container")
+    done <<< "$choices"
+  else
+    containers=("$@")
+  fi
+
+  failed=0
+  for container in "${containers[@]}"; do
+    container="$(_liqid_dev_container_name "$container")" || {
+      failed=1
+      continue
+    }
+    if ! _liqid_container_exists "$container"; then
+      echo "Container '$container' does not exist." >&2
+      failed=1
+      continue
+    fi
+    if ! _liqid_container_uses_liqid_image "$container"; then
+      echo "Refusing to start '$container': image does not match $(_liqid_docker_image)." >&2
+      failed=1
+      continue
+    fi
+    if _liqid_container_running "$container"; then
+      echo "$container is already running." >&2
+      continue
+    fi
+    echo "Starting $container..." >&2
+    docker start "$container" >/dev/null || failed=1
+  done
+
+  return "$failed"
+}
+
 _liqid_dev_stop() {
-  local image container choices selected name c_image status failed
+  local container choices failed
+  local -a containers
+
+  _liqid_docker_ready || return 1
+
+  if [[ $# -eq 0 ]]; then
+    choices="$(_liqid_dev_select_containers "Stop Liqid container" "All matching containers" "stop every Liqid dev container without removing it")" || {
+      echo "No Liqid dev containers found." >&2
+      return 0
+    }
+    while IFS= read -r container; do
+      [[ -n $container ]] && containers+=("$container")
+    done <<< "$choices"
+  else
+    containers=("$@")
+  fi
+
+  failed=0
+  for container in "${containers[@]}"; do
+    container="$(_liqid_dev_container_name "$container")" || {
+      failed=1
+      continue
+    }
+    if ! _liqid_container_exists "$container"; then
+      echo "Container '$container' does not exist." >&2
+      failed=1
+      continue
+    fi
+    if ! _liqid_container_uses_liqid_image "$container"; then
+      echo "Refusing to stop '$container': image does not match $(_liqid_docker_image)." >&2
+      failed=1
+      continue
+    fi
+    if ! _liqid_container_running "$container"; then
+      echo "$container is already stopped." >&2
+      continue
+    fi
+    echo "Stopping $container..." >&2
+    docker stop --time 10 "$container" >/dev/null || failed=1
+  done
+
+  return "$failed"
+}
+
+_liqid_dev_remove() {
+  local image container choices selected name c_image tag status failed
   local -a containers
 
   _liqid_docker_ready || return 1
@@ -732,13 +972,13 @@ _liqid_dev_stop() {
 
     selected="$(
       _liqid_choose_line \
-        "Stop Liqid container" \
+        "Remove Liqid container" \
         "All matching containers"$'\t'"stop and remove every ${image} container"$'\n'"$choices"
     )" || return 1
     container="${selected%%$'\t'*}"
 
     if [[ $container == "All matching containers" ]]; then
-      while IFS=$'\t' read -r name c_image status; do
+      while IFS=$'\t' read -r name c_image tag status; do
         [[ -n $name ]] && containers+=("$name")
       done <<< "$choices"
     else
@@ -785,18 +1025,29 @@ liqid_dev() {
   case "$1" in
     make)
       shift
-      container="$(_liqid_dev_single_container_arg "liqid_dev make [container]" "$@")" || return 1
-      _liqid_dev_make "$container"
+      _liqid_dev_make "$@"
+      ;;
+    start)
+      shift
+      _liqid_dev_start "$@"
       ;;
     enter)
       shift
-      container="$(_liqid_dev_single_container_arg "liqid_dev enter [container]" "$@")" || return 1
+      if [[ $# -eq 0 ]]; then
+        container="$(_liqid_dev_select_container "Enter Liqid container")" || return 1
+      else
+        container="$(_liqid_dev_single_container_arg "liqid_dev enter [container]" "$@")" || return 1
+      fi
       _liqid_dev_require_container "$container" || return 1
       docker exec -it "$container" bash --login -i
       ;;
     sync)
       shift
-      container="$(_liqid_dev_single_container_arg "liqid_dev sync [container]" "$@")" || return 1
+      if [[ $# -eq 0 ]]; then
+        container="$(_liqid_dev_select_container "Sync Liqid container")" || return 1
+      else
+        container="$(_liqid_dev_single_container_arg "liqid_dev sync [container]" "$@")" || return 1
+      fi
       _liqid_dev_require_container "$container" || return 1
       docker exec -it "$container" bash -lc devsync
       ;;
@@ -804,9 +1055,13 @@ liqid_dev() {
       shift
       _liqid_dev_exec "$@"
       ;;
-    stop|rm|remove)
+    stop)
       shift
       _liqid_dev_stop "$@"
+      ;;
+    rm|remove)
+      shift
+      _liqid_dev_remove "$@"
       ;;
     status)
       shift
@@ -817,15 +1072,18 @@ liqid_dev() {
 Usage: liqid_dev <command> [container]
 
 Commands:
-  make [container]          Build and start a fresh Liqid dev container
+  make [opts] [container]   Create or replace a named Liqid dev container
+  start [container ...]     Start selected Liqid dev containers
   enter [container]         Exec into a Liqid dev container with an interactive bash shell
   sync [container]          Run devsync inside a Liqid dev container
   exec [container] -- CMD   Run an arbitrary command inside a Liqid dev container
-  stop [container ...]      Stop and remove selected Liqid dev containers
+  stop [container ...]      Stop selected Liqid dev containers without removing them
+  rm [container ...]        Stop and remove selected Liqid dev containers
   status [container]        Show Liqid dev container state and image
   help                      Show this message
 
 Default container: $(_liqid_dev_container)
+Default network: $(_liqid_dev_network)
 EOF
       ;;
   esac
@@ -836,26 +1094,29 @@ dev() {
 }
 
 bbdl() (
-  local conf="${BITBUCKET_CONF:-$HOME/.liqid/bitbucket.conf}"
-  local user token workspace repo filename dest_dir tmpdir refresh_cache force_filename
-  local cache_root cache_ttl cache_workspace cache_repo cache_dir cache_file cache_lock_dir cache_refresh_started
+  local bitbucket_config_file="${BITBUCKET_CONF:-$HOME/.liqid/bitbucket.conf}"
+  local bitbucket_username bitbucket_app_password workspace repository download_filename download_dir temporary_dir
+  local force_refresh force_filename
+  local cache_root_dir cache_ttl_seconds cache_workspace_key cache_repository_key cache_dir cache_complete_file cache_partial_file
+  local refresh_state_file refresh_status_file refresh_lock_dir refresh_log_file refresh_started_this_run
+  local refresh_started_at refresh_process_id
 
   _liqid_load_dotfiles_env
 
-  if [[ -r "$conf" ]]; then
+  if [[ -r "$bitbucket_config_file" ]]; then
     # shellcheck source=/dev/null
-    source "$conf"
+    source "$bitbucket_config_file"
   fi
 
-  user="${BITBUCKET_USERNAME:-}"
-  token="${BITBUCKET_APP_PASSWORD:-}"
+  bitbucket_username="${BITBUCKET_USERNAME:-}"
+  bitbucket_app_password="${BITBUCKET_APP_PASSWORD:-}"
   workspace="${BITBUCKET_WORKSPACE:-${BITBUCKET_REPO_OWNER:-${BITBUCKET_REPRO_OWNER:-liqid}}}"
-  repo=""
-  filename=""
-  dest_dir="${BITBUCKET_DOWNLOAD_DIR:-$PWD}"
-  refresh_cache=0
+  repository=""
+  download_filename=""
+  download_dir="${BITBUCKET_DOWNLOAD_DIR:-$PWD}"
+  force_refresh=0
   force_filename=0
-  cache_refresh_started=0
+  refresh_started_this_run=0
 
   while [[ $# -gt 0 ]]; do
     case "${1:-}" in
@@ -869,7 +1130,7 @@ Usage: bbdl [repo]
 With no repo, bbdl prompts for a Bitbucket workspace and repository.
 
 Options:
-  --refresh            Ignore cached download metadata for this run
+  --refresh            Force a live refresh while still showing current cache
   --filename           Treat two positional args as repo + filename
 
 Config:
@@ -877,12 +1138,13 @@ Config:
   BITBUCKET_APP_PASSWORD
   BITBUCKET_WORKSPACE      Optional, defaults to liqid
   BITBUCKET_DOWNLOAD_DIR   Optional, defaults to current directory
+  BBDL_CACHE_DIR           Optional, defaults to XDG cache or ~/.cache/bbdl
   BBDL_CACHE_TTL           Optional seconds before cache is stale, defaults to 3600
 EOF
       return 0
       ;;
       --refresh)
-        refresh_cache=1
+        force_refresh=1
         shift
         ;;
       --filename|--file)
@@ -911,21 +1173,21 @@ EOF
         echo "--filename requires repo and filename." >&2
         return 1
       fi
-      repo="$1"
+      repository="$1"
       ;;
     2)
       if (( force_filename )) || { [[ "$1" != "$workspace" ]] && [[ "$2" == *.* || "$2" == */* ]]; }; then
-        repo="$1"
-        filename="$2"
+        repository="$1"
+        download_filename="$2"
       else
         workspace="$1"
-        repo="$2"
+        repository="$2"
       fi
       ;;
     3)
       workspace="$1"
-      repo="$2"
-      filename="$3"
+      repository="$2"
+      download_filename="$3"
       ;;
     *)
       echo "Usage: bbdl [repo], bbdl [workspace] [repo], or bbdl [repo] [filename]" >&2
@@ -933,18 +1195,19 @@ EOF
       ;;
   esac
 
-  if [[ -z "$user" || -z "$token" ]]; then
+  if [[ -z "$bitbucket_username" || -z "$bitbucket_app_password" ]]; then
     echo "BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD must be set." >&2
-    echo "Set them in $conf, dotfiles/.env, or your shell environment." >&2
+    echo "Set them in $bitbucket_config_file, dotfiles/.env, or your shell environment." >&2
     return 1
   fi
 
   _liqid_need curl || return 1
   _liqid_need jq || return 1
 
-  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/bbdl.XXXXXX")" || return 1
-  trap 'rm -rf "$tmpdir"' EXIT
+  temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/bbdl.XXXXXX")" || return 1
+  trap 'rm -rf "$temporary_dir"' EXIT
 
+  # Small UI and shell helpers.
   _bbdl_prompt() {
     local prompt="$1"
     local default="${2-}"
@@ -962,10 +1225,10 @@ EOF
 
   _bbdl_expand_path() {
     case "$1" in
-      "~")
+      \~)
         printf '%s' "$HOME"
         ;;
-      "~/"*)
+      \~/*)
         printf '%s/%s' "$HOME" "${1#~/}"
         ;;
       *)
@@ -990,350 +1253,230 @@ EOF
     printf '%s' "${BASHPID:-$$}"
   }
 
-  _bbdl_api_values() {
-    local url="$1"
-    local body
+  # Bitbucket API helpers.
+  _bbdl_fetch_api_values() {
+    local api_url="$1"
+    local response_json
 
-    while [[ -n "$url" ]]; do
-      body="$(curl -fsS \
-        -u "$user:$token" \
+    while [[ -n "$api_url" ]]; do
+      response_json="$(curl -fsS \
+        -u "$bitbucket_username:$bitbucket_app_password" \
         -H "Accept: application/json" \
         --connect-timeout 15 \
         --max-time 120 \
-        "$url")" || {
+        "$api_url")" || {
           echo >&2
           echo "Bitbucket request failed." >&2
           echo "Check username, app-password scopes, repo permissions, and workspace access." >&2
           return 1
         }
 
-      jq -e '.values? // []' >/dev/null <<< "$body" || {
-        echo "Bitbucket returned invalid JSON for: $url" >&2
+      jq -e '.values? // []' >/dev/null <<< "$response_json" || {
+        echo "Bitbucket returned invalid JSON for: $api_url" >&2
         return 1
       }
 
-      jq -c '.values[]?' <<< "$body" || return 1
-      url="$(jq -r '.next // empty' <<< "$body")" || return 1
+      jq -c '.values[]?' <<< "$response_json" || return 1
+      api_url="$(jq -r '.next // empty' <<< "$response_json")" || return 1
     done
   }
 
-  _bbdl_downloads_url() {
-    local pagelen="${1:-100}"
-    local sort="${2-}"
-    local fields="values.name,values.size,values.created_on,values.links.self.href,next,size,pagelen,page"
+  _bbdl_downloads_api_url() {
+    local page_length="${1:-100}"
+    local sort_field="${2-}"
+    local response_fields="values.name,values.size,values.created_on,values.links.self.href,next,size,pagelen,page"
 
     printf 'https://api.bitbucket.org/2.0/repositories/%s/%s/downloads?pagelen=%s&fields=%s' \
-      "$workspace" "$repo" "$pagelen" "$fields"
+      "$workspace" "$repository" "$page_length" "$response_fields"
 
-    if [[ -n "$sort" ]]; then
-      printf '&sort=%s' "$sort"
+    if [[ -n "$sort_field" ]]; then
+      printf '&sort=%s' "$sort_field"
     fi
   }
 
-  _bbdl_download_url() {
-    local encoded
+  _bbdl_file_download_url() {
+    local encoded_filename
 
-    encoded="$(_bbdl_urlencode "$1")" || return 1
+    encoded_filename="$(_bbdl_urlencode "$1")" || return 1
     printf 'https://api.bitbucket.org/2.0/repositories/%s/%s/downloads/%s' \
-      "$workspace" "$repo" "$encoded"
+      "$workspace" "$repository" "$encoded_filename"
   }
 
-  _bbdl_fetch_downloads_to_file() {
-    local url="$1"
-    local outfile="$2"
-    local max_items="${3:-0}"
-    local show_progress="${4:-1}"
-    local body page page_count fetched total total_text remaining
+  # Picker rendering.
+  _bbdl_render_jsonl_to_tsv() {
+    local jsonl_input="$1"
+    local max_results="${2:-0}"
+    local filename_filter="${3-}"
 
-    : > "$outfile" || return 1
-    page=1
-    fetched=0
-    total=""
+    [[ "$max_results" =~ ^[0-9]+$ ]] || max_results=0
+    if [[ "$jsonl_input" != "-" && ! -s "$jsonl_input" ]]; then
+      return 0
+    fi
 
-    while [[ -n "$url" ]]; do
-      body="$(curl -fsS \
-        -u "$user:$token" \
-        -H "Accept: application/json" \
-        --connect-timeout 15 \
-        --max-time 120 \
-        "$url")" || {
-          echo >&2
-          echo "Bitbucket request failed while fetching downloads page $page." >&2
-          echo "Check username, app-password scopes, repo permissions, and workspace access." >&2
-          return 1
-        }
-
-      jq -e '.values? // []' >/dev/null <<< "$body" || {
-        echo "Bitbucket returned invalid JSON while fetching downloads page $page." >&2
-        return 1
-      }
-
-      page_count="$(jq '.values | length' <<< "$body")" || return 1
-      [[ -z "$total" ]] && total="$(jq -r '.size // empty' <<< "$body")"
-
-      if (( max_items > 0 && fetched + page_count > max_items )); then
-        remaining=$((max_items - fetched))
-        if (( remaining > 0 )); then
-          jq -c --argjson n "$remaining" '.values[:$n][]?' <<< "$body" >> "$outfile" || return 1
-          fetched=$max_items
-        fi
-        url=""
-      else
-        jq -c '.values[]?' <<< "$body" >> "$outfile" || return 1
-        fetched=$((fetched + page_count))
-        url="$(jq -r '.next // empty' <<< "$body")" || return 1
-      fi
-
-      if (( show_progress )); then
-        total_text=""
-        [[ -n "$total" ]] && total_text=" of $total"
-        if (( page == 1 || page % 5 == 0 )) || [[ -z "$url" ]]; then
-          echo "Fetched $fetched$total_text downloads..." >&2
-        fi
-      fi
-
-      (( max_items > 0 && fetched >= max_items )) && break
-      page=$((page + 1))
-    done
-  }
-
-  _bbdl_render_choices_from_jsonl() {
-    local input="$1"
-    local output="$2"
-    local limit="${3:-0}"
-    local query="${4-}"
-
-    [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
-
-    jq -s -r --arg q "$query" --argjson n "$limit" '
-      map(select(
-        ($q == "")
-        or (((.name // "") | ascii_downcase) | contains($q | ascii_downcase))
+    jq -s -r --arg filename_filter "$filename_filter" --argjson max_results "$max_results" '
+      map(select(type == "object"))
+      | map(select((.name // "") != ""))
+      | map(select(
+        ($filename_filter == "")
+        or (((.name // "") | ascii_downcase) | contains($filename_filter | ascii_downcase))
       ))
       | sort_by(.created_on // "")
       | reverse
-      | (if $n > 0 then .[0:$n] else . end)
+      | (if $max_results > 0 then .[0:$max_results] else . end)
       | .[]
       | [.name, ((.size // 0) | tostring), (.created_on // ""), (.links.self.href // "")]
       | @tsv
-    ' "$input" > "$output"
+    ' "$jsonl_input"
   }
 
-  _bbdl_fzf() {
-    local prompt="$1"
+  _bbdl_pick_tsv_with_fzf() {
+    local picker_prompt="$1"
+    local initial_query="${2-}"
+    local search_fields="${3-}"
+    local header_status_file="${4-}"
+    local initial_header="${5-}"
+    local -a fzf_options
 
-    fzf \
-      --height=80% \
-      --reverse \
-      --prompt="$prompt> " \
-      --delimiter=$'\t' \
-      --with-nth=1,2,3
-  }
+    fzf_options=(
+      --height=80%
+      --reverse
+      "--prompt=$picker_prompt> "
+      --delimiter=$'\t'
+      "--with-nth=1,2,3"
+    )
+    [[ -n "$initial_query" ]] && fzf_options+=(--query="$initial_query")
+    [[ -n "$search_fields" ]] && fzf_options+=(--nth="$search_fields")
 
-  _bbdl_stream_choices() {
-    local query="$1"
-    local url="$2"
-    local cache_tmp="${3-}"
-    local show_progress="${4:-0}"
-    local body page page_count fetched total total_text
-
-    if [[ -n "$cache_tmp" ]]; then
-      : > "$cache_tmp" || return 1
-    fi
-
-    page=1
-    fetched=0
-    total=""
-
-    while [[ -n "$url" ]]; do
-      body="$(curl -fsS \
-        -u "$user:$token" \
-        -H "Accept: application/json" \
-        --connect-timeout 15 \
-        --max-time 120 \
-        "$url")" || return 1
-
-      jq -e '.values? // []' >/dev/null <<< "$body" || return 1
-
-      if [[ -n "$cache_tmp" ]]; then
-        jq -c '.values[]?' <<< "$body" >> "$cache_tmp" || return 1
-      fi
-
-      jq -r --arg q "$query" '
-        .values[]?
-        | select(
-          ($q == "")
-          or (((.name // "") | ascii_downcase) | contains($q | ascii_downcase))
-        )
-        | [.name, ((.size // 0) | tostring), (.created_on // ""), (.links.self.href // "")]
-        | @tsv
-      ' <<< "$body" || return 1
-
-      page_count="$(jq '.values | length' <<< "$body")" || return 1
-      fetched=$((fetched + page_count))
-      [[ -z "$total" ]] && total="$(jq -r '.size // empty' <<< "$body")"
-      url="$(jq -r '.next // empty' <<< "$body")" || return 1
-
-      if (( show_progress )); then
-        total_text=""
-        [[ -n "$total" ]] && total_text=" of $total"
-        if (( page == 1 || page % 5 == 0 )) || [[ -z "$url" ]]; then
-          echo "Fetched $fetched$total_text downloads..." >&2
-        fi
-      fi
-
-      page=$((page + 1))
-    done
-
-    if [[ -n "$cache_tmp" ]]; then
-      mv "$cache_tmp" "$cache_file"
+    if [[ -n "$header_status_file" ]]; then
+      BBDL_STATUS_FILE="$header_status_file" fzf "${fzf_options[@]}" \
+        --track \
+        --header="$initial_header" \
+        --bind="start:transform-header:cat \"\$BBDL_STATUS_FILE\" 2>/dev/null" \
+        --bind="focus:transform-header:cat \"\$BBDL_STATUS_FILE\" 2>/dev/null" \
+        --bind="change:transform-header:cat \"\$BBDL_STATUS_FILE\" 2>/dev/null" \
+        --bind="load:transform-header:cat \"\$BBDL_STATUS_FILE\" 2>/dev/null"
+    else
+      fzf "${fzf_options[@]}"
     fi
   }
 
-  _bbdl_stream_pick() {
-    local query="$1"
-    local url="$2"
-    local cache_tmp="$3"
-    local fifo err_file producer_pid selected fzf_status producer_status
-
-    fifo="$tmpdir/stream.$RANDOM"
-    err_file="$tmpdir/stream.$RANDOM.err"
-    mkfifo "$fifo" || return 1
-
-    (
-      trap - EXIT
-      _bbdl_stream_choices "$query" "$url" "$cache_tmp" 0 > "$fifo"
-    ) 2> "$err_file" &
-    producer_pid=$!
-
-    selected="$(_bbdl_fzf "Download" < "$fifo")"
-    fzf_status=$?
-
-    kill "$producer_pid" 2>/dev/null || true
-    producer_status=0
-    wait "$producer_pid" 2>/dev/null || producer_status=$?
-    rm -f "$fifo"
-
-    if [[ -z "$selected" && "$producer_status" -ne 0 && -s "$err_file" ]]; then
-      grep -v -E 'Broken pipe|writing output failed' "$err_file" >&2 || true
-    fi
-    rm -f "$err_file"
-
-    printf '%s' "$selected"
-    return "$fzf_status"
+  _bbdl_deduplicate_choices() {
+    awk -F '\t' 'NF && $1 != "" && !seen[$1]++'
   }
 
   _bbdl_choose_line() {
-    local prompt="$1"
-    local file="$2"
-    local count idx i limit c1 c2 c3 c4
+    local picker_prompt="$1"
+    local choice_file="$2"
+    local choice_count selected_index display_index display_limit
+    local choice_name choice_size choice_created choice_href
 
-    if [[ ! -s "$file" ]]; then
+    if [[ ! -s "$choice_file" ]]; then
       echo "No matches." >&2
       return 1
     fi
 
     if command -v fzf >/dev/null 2>&1; then
-      _bbdl_fzf "$prompt" < "$file"
+      _bbdl_pick_tsv_with_fzf "$picker_prompt" < "$choice_file"
       return
     fi
 
-    count="$(wc -l < "$file" | tr -d '[:space:]')"
-    limit="$count"
+    choice_count="$(wc -l < "$choice_file" | tr -d '[:space:]')"
+    display_limit="$choice_count"
 
-    if (( count > 50 )); then
-      echo "Showing first 50 of $count matches. Install fzf for a much better fuzzy picker." >&2
-      limit=50
+    if (( choice_count > 50 )); then
+      echo "Showing first 50 of $choice_count matches. Install fzf for a much better fuzzy picker." >&2
+      display_limit=50
     fi
 
-    i=1
-    while IFS=$'\t' read -r c1 c2 c3 c4; do
-      printf '%3d) %-60s %12s %s\n' "$i" "$c1" "$c2" "$c3"
-      ((i++))
-      if (( i > limit )); then
+    display_index=1
+    while IFS=$'\t' read -r choice_name choice_size choice_created choice_href; do
+      printf '%3d) %-60s %12s %s\n' "$display_index" "$choice_name" "$choice_size" "$choice_created"
+      ((display_index++))
+      if (( display_index > display_limit )); then
         break
       fi
-    done < "$file"
+    done < "$choice_file"
 
-    idx="$(_bbdl_prompt "Pick number")" || return 1
-    [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= count )) || {
+    selected_index="$(_bbdl_prompt "Pick number")" || return 1
+    if [[ ! "$selected_index" =~ ^[0-9]+$ ]] || (( selected_index < 1 || selected_index > choice_count )); then
       echo "Invalid selection." >&2
       return 1
-    }
+    fi
 
-    sed -n "${idx}p" "$file"
+    sed -n "${selected_index}p" "$choice_file"
   }
 
+  # Cache state and refresh coordination.
   _bbdl_cache_state() {
-    local mtime now age
+    local cache_modified_at current_time cache_age
 
-    [[ -s "$cache_file" ]] || {
+    [[ -s "$cache_complete_file" ]] || {
       printf '%s' "missing"
       return 0
     }
 
-    mtime="$(_bbdl_file_mtime "$cache_file")" || {
+    cache_modified_at="$(_bbdl_file_mtime "$cache_complete_file")" || {
       printf '%s' "stale"
       return 0
     }
-    now="$(date +%s)"
-    age=$((now - mtime))
+    current_time="$(date +%s)"
+    cache_age=$((current_time - cache_modified_at))
 
-    if (( age <= cache_ttl )); then
+    if (( cache_age <= cache_ttl_seconds )); then
       printf '%s' "fresh"
     else
       printf '%s' "stale"
     fi
   }
 
-  _bbdl_mark_cache_lock() {
-    local pid="$1"
+  _bbdl_mark_refresh_lock() {
+    local lock_process_id="$1"
 
     (
-      printf '%s\n' "$pid" > "$cache_lock_dir/pid"
-      date +%s > "$cache_lock_dir/started"
+      printf '%s\n' "$lock_process_id" > "$refresh_lock_dir/pid"
+      date +%s > "$refresh_lock_dir/started_at"
     ) 2>/dev/null || true
   }
 
-  _bbdl_cache_lock_active() {
-    local pid started now age max_age
+  _bbdl_refresh_lock_active() {
+    local lock_process_id lock_started_at current_time lock_age max_lock_age
 
-    [[ -r "$cache_lock_dir/pid" ]] || return 1
-    IFS= read -r pid < "$cache_lock_dir/pid" || return 1
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [[ -r "$refresh_lock_dir/pid" ]] || return 1
+    IFS= read -r lock_process_id < "$refresh_lock_dir/pid" || return 1
+    [[ "$lock_process_id" =~ ^[0-9]+$ ]] || return 1
 
-    max_age="${BBDL_CACHE_LOCK_TTL:-7200}"
-    [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=7200
+    max_lock_age="${BBDL_CACHE_LOCK_TTL:-7200}"
+    [[ "$max_lock_age" =~ ^[0-9]+$ ]] || max_lock_age=7200
 
-    if [[ -r "$cache_lock_dir/started" ]]; then
-      IFS= read -r started < "$cache_lock_dir/started" || started=""
-      if [[ "$started" =~ ^[0-9]+$ ]]; then
-        now="$(date +%s)"
-        age=$((now - started))
-        (( age <= max_age )) || return 1
+    if [[ -r "$refresh_lock_dir/started_at" ]]; then
+      IFS= read -r lock_started_at < "$refresh_lock_dir/started_at" || lock_started_at=""
+      if [[ "$lock_started_at" =~ ^[0-9]+$ ]]; then
+        current_time="$(date +%s)"
+        lock_age=$((current_time - lock_started_at))
+        (( lock_age <= max_lock_age )) || return 1
       fi
     fi
 
-    kill -0 "$pid" 2>/dev/null
+    kill -0 "$lock_process_id" 2>/dev/null
   }
 
-  _bbdl_clear_cache_lock() {
-    rm -f "$cache_lock_dir/pid" "$cache_lock_dir/started" 2>/dev/null || true
-    rmdir "$cache_lock_dir" 2>/dev/null || true
+  _bbdl_clear_refresh_lock() {
+    rm -f "$refresh_lock_dir/pid" "$refresh_lock_dir/started_at" "$refresh_lock_dir/started" 2>/dev/null || true
+    rmdir "$refresh_lock_dir" 2>/dev/null || true
   }
 
-  _bbdl_acquire_cache_lock() {
+  _bbdl_acquire_refresh_lock() {
     mkdir -p "$cache_dir" || return 1
 
-    if mkdir "$cache_lock_dir" 2>/dev/null; then
-      _bbdl_mark_cache_lock "$(_bbdl_current_pid)"
+    if mkdir "$refresh_lock_dir" 2>/dev/null; then
+      _bbdl_mark_refresh_lock "$(_bbdl_current_pid)"
       return 0
     fi
 
-    if ! _bbdl_cache_lock_active; then
-      _bbdl_clear_cache_lock
-      if mkdir "$cache_lock_dir" 2>/dev/null; then
-        _bbdl_mark_cache_lock "$(_bbdl_current_pid)"
+    if ! _bbdl_refresh_lock_active; then
+      _bbdl_clear_refresh_lock
+      if mkdir "$refresh_lock_dir" 2>/dev/null; then
+        _bbdl_mark_refresh_lock "$(_bbdl_current_pid)"
         return 0
       fi
     fi
@@ -1341,207 +1484,500 @@ EOF
     return 1
   }
 
-  _bbdl_release_cache_lock() {
-    _bbdl_clear_cache_lock
+  _bbdl_release_refresh_lock() {
+    _bbdl_clear_refresh_lock
+  }
+
+  _bbdl_status_line() {
+    local status_line
+
+    if [[ -r "$refresh_status_file" ]]; then
+      IFS= read -r status_line < "$refresh_status_file" || status_line=""
+    fi
+
+    printf '%s' "${status_line:-Preparing download cache status for $workspace/$repository.}"
+  }
+
+  _bbdl_write_status_line() {
+    local cache_state status_line
+
+    if [[ -r "$refresh_state_file" ]]; then
+      status_line="$(jq -r --arg repository_label "$workspace/$repository" '
+        def total_text: if .total == null then "?" else (.total | tostring) end;
+        def page_text: if ((.page // 0) | tonumber) > 0 then ", page " + ((.page // 0) | tostring) else "" end;
+        if (.status // "") == "running" then
+          "Refresh running for \($repository_label): \((.fetched // 0) | tostring)/\(total_text) downloads\(page_text)"
+        elif (.status // "") == "done" then
+          "Refresh complete for \($repository_label): \((.fetched // 0) | tostring)/\(total_text) downloads"
+        elif (.status // "") == "error" then
+          "Refresh stopped for \($repository_label): \((.fetched // 0) | tostring)/\(total_text) downloads\(page_text)" +
+          (if (.message // "") != "" then " - " + .message else "" end)
+        else
+          empty
+        end
+      ' "$refresh_state_file" 2>/dev/null)" || status_line=""
+    fi
+
+    if [[ -z "$status_line" ]]; then
+      cache_state="$(_bbdl_cache_state)"
+      case "$cache_state" in
+        fresh)
+          status_line="Cache fresh for $workspace/$repository; no refresh running."
+          ;;
+        stale)
+          status_line="Cache stale for $workspace/$repository; refresh will run in the background."
+          ;;
+        *)
+          status_line="No complete cache for $workspace/$repository; downloads will appear as refresh pages finish."
+          ;;
+      esac
+    fi
+
+    printf '%s\n' "$status_line" > "$refresh_status_file" 2>/dev/null || true
+  }
+
+  _bbdl_write_refresh_state() {
+    local refresh_status="$1"
+    local fetched_count="${2:-0}"
+    local total_count="${3-}"
+    local refresh_page="${4:-0}"
+    local status_message="${5-}"
+    local current_time state_process_id state_tmp_file
+
+    mkdir -p "$cache_dir" || return 1
+    current_time="$(date +%s)"
+    [[ -n "$refresh_started_at" ]] || refresh_started_at="$current_time"
+    state_process_id="$refresh_process_id"
+    if [[ -z "$state_process_id" && -r "$refresh_lock_dir/pid" ]]; then
+      IFS= read -r state_process_id < "$refresh_lock_dir/pid" || state_process_id=""
+    fi
+
+    state_tmp_file="${refresh_state_file}.$$.$RANDOM.tmp"
+    if ! jq -n \
+      --arg workspace "$workspace" \
+      --arg repository "$repository" \
+      --arg refresh_status "$refresh_status" \
+      --arg state_process_id "$state_process_id" \
+      --arg started "$refresh_started_at" \
+      --arg updated_at "$current_time" \
+      --arg fetched_count "$fetched_count" \
+      --arg total_count "$total_count" \
+      --arg refresh_page "$refresh_page" \
+      --arg status_message "$status_message" '
+        {
+          schema: 1,
+          workspace: $workspace,
+          repository: $repository,
+          status: $refresh_status,
+          pid: (if $state_process_id == "" then null else ($state_process_id | tonumber? // null) end),
+          started_at: (if $started == "" then null else ($started | tonumber? // null) end),
+          updated_at: ($updated_at | tonumber),
+          fetched: ($fetched_count | tonumber? // 0),
+          total: (if $total_count == "" then null else ($total_count | tonumber? // null) end),
+          page: ($refresh_page | tonumber? // 0),
+          message: $status_message
+        }
+      ' > "$state_tmp_file"; then
+      rm -f "$state_tmp_file"
+      return 1
+    fi
+
+    mv "$state_tmp_file" "$refresh_state_file" || {
+      rm -f "$state_tmp_file"
+      return 1
+    }
+    _bbdl_write_status_line
+  }
+
+  _bbdl_reconcile_refresh_state() {
+    local refresh_status fetched_count total_count refresh_page
+
+    if [[ -d "$refresh_lock_dir" ]] && ! _bbdl_refresh_lock_active; then
+      _bbdl_clear_refresh_lock
+    fi
+
+    refresh_status="$(jq -r '.status // empty' "$refresh_state_file" 2>/dev/null)" || refresh_status=""
+    if [[ "$refresh_status" == "running" ]] && ! _bbdl_refresh_lock_active; then
+      fetched_count="$(jq -r '.fetched // 0' "$refresh_state_file" 2>/dev/null)" || fetched_count=0
+      total_count="$(jq -r 'if .total == null then "" else .total end' "$refresh_state_file" 2>/dev/null)" || total_count=""
+      refresh_page="$(jq -r '.page // 0' "$refresh_state_file" 2>/dev/null)" || refresh_page=0
+      refresh_started_at="$(jq -r '.started_at // empty' "$refresh_state_file" 2>/dev/null)" || refresh_started_at=""
+      refresh_process_id="$(jq -r '.pid // empty' "$refresh_state_file" 2>/dev/null)" || refresh_process_id=""
+      _bbdl_write_refresh_state "error" "$fetched_count" "$total_count" "$refresh_page" "refresh process is no longer running"
+    else
+      _bbdl_write_status_line
+    fi
+  }
+
+  _bbdl_refresh_error() {
+    local fetched_count="$1"
+    local total_count="$2"
+    local refresh_page="$3"
+    local error_message="$4"
+    local error_detail="${5-}"
+
+    _bbdl_write_refresh_state "error" "$fetched_count" "$total_count" "$refresh_page" "$error_message" || true
+    echo "$error_message" >&2
+    [[ -n "$error_detail" ]] && echo "$error_detail" >&2
+    return 1
+  }
+
+  _bbdl_refresh_worker() {
+    local api_url response_json request_page response_page page_download_count
+    local fetched_count total_count progress_total_text page_json_file complete_cache_tmp_file
+
+    api_url="$(_bbdl_downloads_api_url 100 "-created_on")"
+    request_page=1
+    fetched_count=0
+    total_count=""
+
+    : > "$cache_partial_file" || return 1
+    _bbdl_write_refresh_state "running" "$fetched_count" "$total_count" 0 "starting" || return 1
+
+    while [[ -n "$api_url" ]]; do
+      response_json="$(curl -fsS \
+        -u "$bitbucket_username:$bitbucket_app_password" \
+        -H "Accept: application/json" \
+        --connect-timeout 15 \
+        --max-time 120 \
+        "$api_url")" || {
+          _bbdl_refresh_error \
+            "$fetched_count" \
+            "$total_count" \
+            "$request_page" \
+            "Bitbucket request failed while fetching downloads page $request_page." \
+            "Check username, app-password scopes, repo permissions, and workspace access."
+          return 1
+        }
+
+      jq -e '.values? // []' >/dev/null <<< "$response_json" || {
+        _bbdl_refresh_error "$fetched_count" "$total_count" "$request_page" \
+          "Bitbucket returned invalid JSON while fetching downloads page $request_page."
+        return 1
+      }
+
+      page_json_file="${cache_partial_file}.$$.$RANDOM.page"
+      jq -c '.values[]?' <<< "$response_json" > "$page_json_file" || {
+        rm -f "$page_json_file"
+        _bbdl_refresh_error "$fetched_count" "$total_count" "$request_page" \
+          "Unable to render downloads page $request_page."
+        return 1
+      }
+      cat "$page_json_file" >> "$cache_partial_file" || {
+        rm -f "$page_json_file"
+        _bbdl_refresh_error "$fetched_count" "$total_count" "$request_page" \
+          "Unable to append downloads page $request_page to partial cache."
+        return 1
+      }
+      rm -f "$page_json_file"
+
+      page_download_count="$(jq '.values | length' <<< "$response_json")" || return 1
+      fetched_count=$((fetched_count + page_download_count))
+      [[ -z "$total_count" ]] && total_count="$(jq -r '.size // empty' <<< "$response_json")"
+      response_page="$(jq -r '.page // empty' <<< "$response_json")" || response_page=""
+      [[ "$response_page" =~ ^[0-9]+$ ]] || response_page="$request_page"
+
+      progress_total_text=""
+      [[ -n "$total_count" ]] && progress_total_text="/$total_count"
+      echo "Fetched $fetched_count$progress_total_text downloads (page $response_page)." >&2
+      _bbdl_write_refresh_state "running" "$fetched_count" "$total_count" "$response_page" "" || return 1
+
+      api_url="$(jq -r '.next // empty' <<< "$response_json")" || return 1
+      request_page=$((request_page + 1))
+    done
+
+    complete_cache_tmp_file="${cache_complete_file}.$$.$RANDOM.tmp"
+    cp "$cache_partial_file" "$complete_cache_tmp_file" || {
+      rm -f "$complete_cache_tmp_file"
+      _bbdl_refresh_error "$fetched_count" "$total_count" "$((request_page - 1))" \
+        "Unable to prepare refreshed cache file."
+      return 1
+    }
+    mv "$complete_cache_tmp_file" "$cache_complete_file" || {
+      rm -f "$complete_cache_tmp_file"
+      _bbdl_refresh_error "$fetched_count" "$total_count" "$((request_page - 1))" \
+        "Unable to replace refreshed cache file."
+      return 1
+    }
+
+    _bbdl_write_refresh_state "done" "$fetched_count" "$total_count" "$((request_page - 1))" ""
   }
 
   _bbdl_start_background_refresh() {
-    local tmp refresh_pid
+    local refresh_worker_pid
 
-    (( cache_refresh_started )) && return 0
-    cache_refresh_started=1
-
-    if ! _bbdl_acquire_cache_lock; then
-      echo "Download cache refresh is already running." >&2
+    _bbdl_reconcile_refresh_state
+    if _bbdl_refresh_lock_active; then
+      if (( ! refresh_started_this_run )); then
+        echo "Download cache refresh is already running for $workspace/$repository." >&2
+      fi
+      refresh_started_this_run=1
       return 0
     fi
 
-    echo "Refreshing download cache in the background." >&2
+    _bbdl_acquire_refresh_lock || {
+      echo "Download cache refresh is already running for $workspace/$repository." >&2
+      refresh_started_this_run=1
+      return 0
+    }
 
-    tmp="${cache_file}.$$.$RANDOM.tmp"
+    refresh_started_this_run=1
+    refresh_started_at="$(date +%s)"
+    refresh_process_id=""
+    : > "$cache_partial_file" || {
+      _bbdl_release_refresh_lock
+      return 1
+    }
+    : > "$refresh_log_file" 2>/dev/null || true
+    _bbdl_write_refresh_state "running" 0 "" 0 "starting" || {
+      _bbdl_release_refresh_lock
+      return 1
+    }
+
     (
-      trap '[[ -n "$tmp" ]] && rm -f "$tmp"; _bbdl_release_cache_lock' EXIT
-      if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url 100 "")" "$tmp" 0 0; then
-        mv "$tmp" "$cache_file"
-        tmp=""
-      else
-        rm -f "$tmp"
-        tmp=""
-      fi
-    ) >/dev/null 2>&1 &
-    refresh_pid=$!
-    _bbdl_mark_cache_lock "$refresh_pid"
-  }
-
-  _bbdl_use_cache() {
-    local state
-
-    (( refresh_cache )) && return 1
-    [[ -s "$cache_file" ]] || return 1
-
-    state="$(_bbdl_cache_state)"
-    if [[ "$state" == "stale" ]]; then
-      echo "Using cached downloads for $workspace/$repo; cache is stale." >&2
-      _bbdl_start_background_refresh
-    else
-      echo "Using cached downloads for $workspace/$repo." >&2
-    fi
-
-    return 0
+      trap - EXIT
+      trap '' HUP
+      trap '_bbdl_release_refresh_lock' EXIT
+      _bbdl_refresh_worker
+    ) </dev/null >> "$refresh_log_file" 2>&1 &
+    refresh_worker_pid=$!
+    refresh_process_id="$refresh_worker_pid"
+    _bbdl_mark_refresh_lock "$refresh_worker_pid"
+    _bbdl_write_refresh_state "running" 0 "" 0 "refresh started"
+    echo "Refreshing downloads for $workspace/$repository in the background." >&2
   }
 
   _bbdl_refresh_cache_foreground() {
-    local tmp
+    local refresh_status_code
 
-    mkdir -p "$cache_dir" || return 1
-    tmp="${cache_file}.$$.$RANDOM.tmp"
-
-    echo "Fetching downloads for $workspace/$repo..." >&2
-    if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url 100 "")" "$tmp" 0 1; then
-      mv "$tmp" "$cache_file"
-    else
-      rm -f "$tmp"
-      return 1
+    _bbdl_reconcile_refresh_state
+    if _bbdl_refresh_lock_active; then
+      echo "Waiting for active download cache refresh to finish." >&2
+      while _bbdl_refresh_lock_active; do
+        printf '%s\n' "$(_bbdl_status_line)" >&2
+        sleep 5
+      done
+      return 0
     fi
 
-    if [[ ! -s "$cache_file" ]]; then
-      echo "No downloads found for $workspace/$repo" >&2
-      return 1
+    _bbdl_acquire_refresh_lock || return 1
+    refresh_started_at="$(date +%s)"
+    refresh_process_id="$(_bbdl_current_pid)"
+    _bbdl_mark_refresh_lock "$refresh_process_id"
+    _bbdl_refresh_worker
+    refresh_status_code=$?
+    _bbdl_release_refresh_lock
+    return "$refresh_status_code"
+  }
+
+  _bbdl_ensure_live_refresh() {
+    local cache_state
+
+    mkdir -p "$cache_dir" || return 1
+    _bbdl_reconcile_refresh_state
+    if _bbdl_refresh_lock_active; then
+      if (( ! refresh_started_this_run )); then
+        echo "Download cache refresh is already running for $workspace/$repository." >&2
+      fi
+      refresh_started_this_run=1
+      return 0
+    fi
+
+    cache_state="$(_bbdl_cache_state)"
+    if (( force_refresh )) || [[ "$cache_state" != "fresh" ]]; then
+      _bbdl_start_background_refresh
+    else
+      _bbdl_write_status_line
     fi
   }
 
-  _bbdl_download_file() {
-    local name="$1"
-    local href="$2"
-    local dest_in out yn
+  _bbdl_emit_live_entries() {
+    local max_results="${1:-0}"
+    local filename_filter="${2-}"
+    local emitted_line_count available_line_count bounded_line_count first_new_line
 
-    if [[ -z "$href" ]]; then
+    _bbdl_render_jsonl_to_tsv "$cache_complete_file" "$max_results" "$filename_filter"
+
+    _bbdl_refresh_lock_active || return 0
+    emitted_line_count=0
+    while true; do
+      if [[ -f "$cache_partial_file" ]]; then
+        available_line_count="$(wc -l < "$cache_partial_file" | tr -d '[:space:]')" || available_line_count=0
+        [[ "$available_line_count" =~ ^[0-9]+$ ]] || available_line_count=0
+        bounded_line_count="$available_line_count"
+        if (( max_results > 0 && bounded_line_count > max_results )); then
+          bounded_line_count="$max_results"
+        fi
+        if (( bounded_line_count > emitted_line_count )); then
+          first_new_line=$((emitted_line_count + 1))
+          sed -n "${first_new_line},${bounded_line_count}p" "$cache_partial_file" \
+            | _bbdl_render_jsonl_to_tsv "-" 0 "$filename_filter"
+          emitted_line_count="$bounded_line_count"
+        fi
+      fi
+
+      _bbdl_write_status_line
+      _bbdl_refresh_lock_active || break
+      sleep 1
+    done
+
+    if [[ -f "$cache_partial_file" ]]; then
+      available_line_count="$(wc -l < "$cache_partial_file" | tr -d '[:space:]')" || available_line_count=0
+      [[ "$available_line_count" =~ ^[0-9]+$ ]] || available_line_count=0
+      bounded_line_count="$available_line_count"
+      if (( max_results > 0 && bounded_line_count > max_results )); then
+        bounded_line_count="$max_results"
+      fi
+      if (( bounded_line_count > emitted_line_count )); then
+        first_new_line=$((emitted_line_count + 1))
+        sed -n "${first_new_line},${bounded_line_count}p" "$cache_partial_file" \
+          | _bbdl_render_jsonl_to_tsv "-" 0 "$filename_filter"
+      fi
+    fi
+  }
+
+  _bbdl_live_pick() {
+    local picker_prompt="$1"
+    local max_results="${2:-0}"
+    local initial_query="${3-}"
+    local choice_file selected_choice picker_status
+
+    _bbdl_write_status_line
+    if command -v fzf >/dev/null 2>&1; then
+      if [[ -s "$cache_complete_file" ]]; then
+        echo "Opening picker with cached downloads; refreshed rows append as pages finish." >&2
+      else
+        echo "Opening picker before the cache is ready; downloads appear as pages finish." >&2
+      fi
+
+      selected_choice="$(
+        set +o pipefail 2>/dev/null || true
+        _bbdl_emit_live_entries "$max_results" "" \
+          | _bbdl_deduplicate_choices \
+          | _bbdl_pick_tsv_with_fzf "$picker_prompt" "$initial_query" "1" "$refresh_status_file" "$(_bbdl_status_line)"
+      )"
+      picker_status=$?
+      printf '%s' "$selected_choice"
+      return "$picker_status"
+    fi
+
+    choice_file="$temporary_dir/download_choices.tsv"
+    if [[ ! -s "$cache_complete_file" ]]; then
+      _bbdl_refresh_cache_foreground || return 1
+    fi
+    : > "$choice_file" || return 1
+    _bbdl_render_jsonl_to_tsv "$cache_complete_file" "$max_results" "$initial_query" > "$choice_file" || return 1
+    _bbdl_choose_line "$picker_prompt" "$choice_file"
+  }
+
+  # Download flow.
+  _bbdl_download_file() {
+    local download_name="$1"
+    local download_href="$2"
+    local download_dir_input output_path overwrite_answer
+
+    if [[ -z "$download_href" ]]; then
       echo "Selected download has no download URL." >&2
       return 1
     fi
 
-    echo "Selected: $name" >&2
-    dest_in="$(_bbdl_prompt "Download directory" "$dest_dir")" || return 1
-    dest_dir="$(_bbdl_expand_path "$dest_in")"
-    mkdir -p "$dest_dir" || return 1
+    echo "Selected: $download_name" >&2
+    download_dir_input="$(_bbdl_prompt "Download directory" "$download_dir")" || return 1
+    download_dir="$(_bbdl_expand_path "$download_dir_input")"
+    mkdir -p "$download_dir" || return 1
 
-    out="${dest_dir%/}/${name##*/}"
+    output_path="${download_dir%/}/${download_name##*/}"
 
-    if [[ -e "$out" ]]; then
-      yn="$(_bbdl_prompt "File exists. Overwrite $out?" "N")" || return 1
-      [[ "$yn" =~ ^[Yy]$ ]] || {
+    if [[ -e "$output_path" ]]; then
+      overwrite_answer="$(_bbdl_prompt "File exists. Overwrite $output_path?" "N")" || return 1
+      [[ "$overwrite_answer" =~ ^[Yy]$ ]] || {
         echo "Skipped." >&2
         return 0
       }
     fi
 
-    echo "Downloading to: $out" >&2
+    echo "Downloading to: $output_path" >&2
     curl -fL \
       --progress-bar \
       --connect-timeout 15 \
       --max-time 0 \
-      -u "$user:$token" \
-      "$href" \
-      -o "$out" || return 1
+      -u "$bitbucket_username:$bitbucket_app_password" \
+      "$download_href" \
+      -o "$output_path" || return 1
 
-    echo "Done: $out" >&2
+    echo "Done: $output_path" >&2
   }
 
-  if [[ -z "$repo" ]]; then
-    local ws_in repo_choices selected_repo repo_name
-    ws_in="$(_bbdl_prompt "Workspace" "$workspace")" || return 1
-    workspace="$ws_in"
+  if [[ -z "$repository" ]]; then
+    local workspace_input repository_choices_file selected_repository repository_display_name repository_updated_at
+    workspace_input="$(_bbdl_prompt "Workspace" "$workspace")" || return 1
+    workspace="$workspace_input"
 
     echo "Fetching repositories for workspace: $workspace" >&2
-    repo_choices="$tmpdir/repos.tsv"
-    _bbdl_api_values "https://api.bitbucket.org/2.0/repositories/${workspace}?pagelen=100&sort=name" \
+    repository_choices_file="$temporary_dir/repos.tsv"
+    _bbdl_fetch_api_values "https://api.bitbucket.org/2.0/repositories/${workspace}?pagelen=100&sort=name" \
       | jq -r '[.slug, (.name // .slug), (.updated_on // "")] | @tsv' \
-      > "$repo_choices" || return 1
+      > "$repository_choices_file" || return 1
 
-    selected_repo="$(_bbdl_choose_line "Repo" "$repo_choices")" || return 1
-    IFS=$'\t' read -r repo repo_name _ <<< "$selected_repo"
+    selected_repository="$(_bbdl_choose_line "Repo" "$repository_choices_file")" || return 1
+    IFS=$'\t' read -r repository repository_display_name repository_updated_at <<< "$selected_repository"
   fi
 
-  echo "Selected repo: $workspace/$repo" >&2
+  echo "Selected repo: $workspace/$repository" >&2
 
-  cache_root="${BBDL_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/bbdl}"
-  cache_ttl="${BBDL_CACHE_TTL:-${BITBUCKET_DOWNLOAD_CACHE_TTL:-3600}}"
-  [[ "$cache_ttl" =~ ^[0-9]+$ ]] || cache_ttl=3600
-  cache_workspace="$(_bbdl_cache_key "$workspace")"
-  cache_repo="$(_bbdl_cache_key "$repo")"
-  cache_dir="${cache_root%/}/${cache_workspace}/${cache_repo}"
-  cache_file="${cache_dir}/downloads.jsonl"
-  cache_lock_dir="${cache_dir}/refresh.lock"
+  cache_root_dir="${BBDL_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/bbdl}"
+  cache_ttl_seconds="${BBDL_CACHE_TTL:-${BITBUCKET_DOWNLOAD_CACHE_TTL:-3600}}"
+  [[ "$cache_ttl_seconds" =~ ^[0-9]+$ ]] || cache_ttl_seconds=3600
+  cache_workspace_key="$(_bbdl_cache_key "$workspace")"
+  cache_repository_key="$(_bbdl_cache_key "$repository")"
+  cache_dir="${cache_root_dir%/}/${cache_workspace_key}/${cache_repository_key}"
+  cache_complete_file="${cache_dir}/downloads.jsonl"
+  cache_partial_file="${cache_dir}/downloads.partial.jsonl"
+  refresh_state_file="${cache_dir}/refresh.state.json"
+  refresh_status_file="${cache_dir}/refresh.status"
+  refresh_lock_dir="${cache_dir}/refresh.lock"
+  refresh_log_file="${cache_dir}/refresh.log"
 
-  if [[ -n "$filename" ]]; then
-    local direct_href
-    direct_href="$(_bbdl_download_url "$filename")" || return 1
-    _bbdl_download_file "$filename" "$direct_href"
+  if [[ -n "$download_filename" ]]; then
+    local direct_download_href
+    direct_download_href="$(_bbdl_file_download_url "$download_filename")" || return 1
+    _bbdl_download_file "$download_filename" "$direct_download_href"
     return
   fi
 
+  mkdir -p "$cache_dir" || return 1
+  _bbdl_reconcile_refresh_state
+  printf '%s\n' "$(_bbdl_status_line)" >&2
+
   while true; do
-    local mode n query choices selected name size created href again pagelen tmp_limited cache_tmp
-    selected=""
+    local selection_mode newest_count filename_query selected_download
+    local selected_name selected_size selected_created selected_href download_again
+    selected_download=""
+    filename_query=""
 
     echo >&2
     echo "Find a download:" >&2
     echo "  1) Newest N downloads" >&2
     echo "  2) Search filenames" >&2
     echo "  3) Show all, newest first" >&2
-    mode="$(_bbdl_prompt "Choice" "1")" || return 1
+    selection_mode="$(_bbdl_prompt "Choice" "1")" || return 1
 
-    choices="$tmpdir/download_choices.tsv"
-    : > "$choices"
-
-    case "$mode" in
+    case "$selection_mode" in
       1)
-        n="$(_bbdl_prompt "How many newest downloads?" "25")" || return 1
-        [[ "$n" =~ ^[0-9]+$ ]] || n=25
-        (( n > 0 )) || n=25
-        if _bbdl_use_cache; then
-          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" "$n" || return 1
-        else
-          pagelen="$n"
-          (( pagelen < 10 )) && pagelen=10
-          (( pagelen > 100 )) && pagelen=100
-          tmp_limited="$tmpdir/newest.jsonl"
-          echo "Fetching newest $n downloads..." >&2
-          if _bbdl_fetch_downloads_to_file "$(_bbdl_downloads_url "$pagelen" "-created_on")" "$tmp_limited" "$n" 1; then
-            _bbdl_render_choices_from_jsonl "$tmp_limited" "$choices" "$n" || return 1
-            _bbdl_start_background_refresh
-          else
-            echo "Newest-only request failed; fetching all downloads so they can be sorted locally." >&2
-            _bbdl_refresh_cache_foreground || return 1
-            _bbdl_render_choices_from_jsonl "$cache_file" "$choices" "$n" || return 1
-          fi
-        fi
+        newest_count="$(_bbdl_prompt "How many newest downloads?" "25")" || return 1
+        [[ "$newest_count" =~ ^[0-9]+$ ]] || newest_count=25
+        (( newest_count > 0 )) || newest_count=25
+        _bbdl_ensure_live_refresh || return 1
+        selected_download="$(_bbdl_live_pick "Download" "$newest_count" "")" || return 1
         ;;
       2)
-        query="$(_bbdl_prompt "Filename search")" || return 1
-        if _bbdl_use_cache; then
-          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" 0 "$query" || return 1
-        elif command -v fzf >/dev/null 2>&1; then
-          mkdir -p "$cache_dir" || return 1
-          cache_tmp="${cache_file}.$$.$RANDOM.tmp"
-          echo "Streaming filename matches from Bitbucket. fzf will update as pages arrive." >&2
-          selected="$(_bbdl_stream_pick "$query" "$(_bbdl_downloads_url 100 "")" "$cache_tmp")" || selected=""
-          rm -f "$cache_tmp"
-          [[ -n "$selected" ]] || {
-            echo "No selection." >&2
-            continue
-          }
-        else
-          echo "Fetching downloads and searching filenames as pages arrive..." >&2
-          _bbdl_refresh_cache_foreground || return 1
-          _bbdl_render_choices_from_jsonl "$cache_file" "$choices" 0 "$query" || return 1
-        fi
+        filename_query="$(_bbdl_prompt "Filename search")" || return 1
+        _bbdl_ensure_live_refresh || return 1
+        selected_download="$(_bbdl_live_pick "Download" 0 "$filename_query")" || return 1
         ;;
       3)
-        if ! _bbdl_use_cache; then
-          _bbdl_refresh_cache_foreground || return 1
-        fi
-        _bbdl_render_choices_from_jsonl "$cache_file" "$choices" || return 1
+        _bbdl_ensure_live_refresh || return 1
+        selected_download="$(_bbdl_live_pick "Download" 0 "")" || return 1
         ;;
       *)
         echo "Invalid choice." >&2
@@ -1549,19 +1985,15 @@ EOF
         ;;
     esac
 
-    if [[ -z "$selected" && ! -s "$choices" ]]; then
-      echo "No matches." >&2
+    [[ -n "$selected_download" ]] || {
+      echo "No selection." >&2
       continue
-    fi
+    }
+    IFS=$'\t' read -r selected_name selected_size selected_created selected_href <<< "$selected_download"
 
-    if [[ -z "$selected" ]]; then
-      selected="$(_bbdl_choose_line "Download" "$choices")" || return 1
-    fi
-    IFS=$'\t' read -r name size created href <<< "$selected"
+    _bbdl_download_file "$selected_name" "$selected_href" || return 1
 
-    _bbdl_download_file "$name" "$href" || return 1
-
-    again="$(_bbdl_prompt "Download another from $workspace/$repo?" "N")" || return 1
-    [[ "$again" =~ ^[Yy]$ ]] || break
+    download_again="$(_bbdl_prompt "Download another from $workspace/$repository?" "N")" || return 1
+    [[ "$download_again" =~ ^[Yy]$ ]] || break
   done
 )
