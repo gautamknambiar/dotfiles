@@ -299,6 +299,7 @@ maybe_link_group "Install bash symlinks (.bashrc, .bash.d)?" .bashrc .bash.d
 maybe_link_group "Install zsh symlinks (.zshrc, .zsh.d)?" .zshrc .zsh.d
 maybe_link_group "Install Vim config symlink (.vimrc)?" .vimrc
 maybe_link_group "Install shared config symlinks (.config/nvim, .config/fastfetch)?" .config/nvim .config/fastfetch
+maybe_link_group "Install dotfiles profile symlink (.config/dotfiles/profile.sh)?" .config/dotfiles/profile.sh
 
 if is_macos; then
     maybe_link_group "Install macOS Terminal profile config (.config/terminal)?" .config/terminal

@@ -4,18 +4,17 @@ fi
 
 ZSH_D="$HOME/.zsh.d"
 CONFIG_FILE="$HOME/.config/fastfetch/config_src.jsonc"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
+DOTFILES_SHELL_LOADER="${DOTFILES_SHELL_LOADER:-$DOTFILES_DIR/Scripts/shell_loader.sh}"
 
-if [[ -r "$ZSH_D/zsh_colors" ]]; then
-    source "$ZSH_D/zsh_colors"
+if [[ -r "$DOTFILES_SHELL_LOADER" ]]; then
+    source "$DOTFILES_SHELL_LOADER"
+    dotfiles_init_shell zsh "$ZSH_D"
 fi
 
-if [[ -r "$ZSH_D/zsh_functions" ]]; then
-    source "$ZSH_D/zsh_functions"
+if command -v cleanpath >/dev/null 2>&1; then
+    cleanpath -q
 fi
-
-zsh_daily_motd
-
-cleanpath -q
 
 if [[ -r "$HOME/.local/bin/env" ]]; then
     . "$HOME/.local/bin/env"

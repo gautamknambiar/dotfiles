@@ -132,18 +132,17 @@ fi
 
 BASH_D="$HOME/.bash.d"
 CONFIG_FILE="$HOME/.config/fastfetch/config_src.jsonc"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
+DOTFILES_SHELL_LOADER="${DOTFILES_SHELL_LOADER:-$DOTFILES_DIR/Scripts/shell_loader.sh}"
 
-if [[ -r "$BASH_D/bash_colors" ]]; then
-    . "$BASH_D/bash_colors"
+if [[ -r "$DOTFILES_SHELL_LOADER" ]]; then
+    . "$DOTFILES_SHELL_LOADER"
+    dotfiles_init_shell bash "$BASH_D"
 fi
 
-if [[ -r "$BASH_D/bash_functions" ]]; then
-    . "$BASH_D/bash_functions"
+if command -v cleanpath >/dev/null 2>&1; then
+    cleanpath -q
 fi
-
-bash_daily_motd
-
-cleanpath -q
 
 if [ -r "$HOME/.local/bin/env" ]; then
     . "$HOME/.local/bin/env"
