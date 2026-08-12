@@ -1,0 +1,168 @@
+" A conventional, plugin-free Vim configuration.
+
+scriptencoding utf-8
+set nocompatible
+
+" Use Space for a small number of personal shortcuts while leaving Vim's
+" normal-mode commands unchanged.
+let mapleader = ' '
+let s:vimrc = resolve(empty($XDG_CONFIG_HOME)
+            \ ? expand('~/.config/vim/vimrc')
+            \ : expand($XDG_CONFIG_HOME . '/vim/vimrc'))
+
+" Filetype-aware settings and syntax highlighting.
+filetype plugin indent on
+syntax enable
+
+" Interface.
+set number
+set relativenumber
+set cursorline
+set ruler
+set showcmd
+set showmatch
+set matchtime=2
+set laststatus=2
+set mouse=a
+set scrolloff=4
+set sidescrolloff=4
+set splitbelow
+set splitright
+set nowrap
+set belloff=all
+set shortmess+=I
+
+if has('termguicolors')
+    set termguicolors
+endif
+set background=dark
+silent! colorscheme habamax
+
+" Editing and indentation defaults. Filetype plugins may override these for
+" languages with established conventions.
+set backspace=indent,eol,start
+set autoindent
+set expandtab
+set tabstop=4
+set shiftwidth=4
+set softtabstop=-1
+set shiftround
+
+" Searching.
+set incsearch
+set hlsearch
+set ignorecase
+set smartcase
+set wrapscan
+
+" Command-line and insert completion.
+set wildmenu
+set wildmode=longest:full,full
+set wildignorecase
+set completeopt=menuone,noinsert,noselect
+
+if exists('+wildoptions')
+    set wildoptions=pum
+endif
+if exists('+inccommand')
+    set inccommand=split
+endif
+
+" Notice files changed by another program and allow switching away from an
+" unsaved buffer without hiding or discarding its contents.
+set autoread
+set hidden
+set confirm
+
+" Follow Vim's XDG layout: persistent editor data belongs in the data
+" directory, while session state and recovery files belong in the state
+" directory.
+let s:vim_data = empty($XDG_DATA_HOME)
+            \ ? expand('~/.local/share/vim')
+            \ : expand($XDG_DATA_HOME . '/vim')
+let s:vim_state = empty($XDG_STATE_HOME)
+            \ ? expand('~/.local/state/vim')
+            \ : expand($XDG_STATE_HOME . '/vim')
+let s:swap_dir = s:vim_state . '/swap'
+let s:backup_dir = s:vim_state . '/backup'
+let s:undo_dir = s:vim_data . '/undo'
+let s:view_dir = s:vim_data . '/view'
+
+for s:dir in [s:vim_state, s:vim_data, s:swap_dir, s:backup_dir,
+            \ s:undo_dir, s:view_dir]
+    if !isdirectory(s:dir)
+        call mkdir(s:dir, 'p', 0700)
+    endif
+endfor
+
+execute 'set directory^=' . fnameescape(s:swap_dir) . '//'
+execute 'set backupdir^=' . fnameescape(s:backup_dir) . '//'
+execute 'set undodir=' . fnameescape(s:undo_dir)
+execute 'set viewdir=' . fnameescape(s:view_dir)
+if exists('+viminfofile')
+    execute 'set viminfofile=' . fnameescape(s:vim_state . '/viminfo')
+endif
+let g:netrw_home = s:vim_data
+set backup
+set writebackup
+set undofile
+
+" Show unusual whitespace only when requested with <Leader>l.
+set nolist
+set listchars=tab:»·,trail:·,extends:›,precedes:‹,nbsp:␣
+
+" Vim 9.2 clipboard provider for WSL. WSLg does not currently expose the
+" Wayland data-control protocol, so use the Windows clipboard bridge.
+function! s:WslClipboardAvailable() abort
+    return exists('$WSL_DISTRO_NAME')
+                \ && executable('clip.exe')
+                \ && executable('powershell.exe')
+endfunction
+
+function! s:WslClipboardCopy(register, register_type, lines) abort
+    let text = join(a:lines, "\n")
+    if a:register_type[0] ==# 'V'
+        let text .= "\n"
+    endif
+    call system('clip.exe', text)
+endfunction
+
+function! s:WslClipboardPaste(register) abort
+    let text = system('powershell.exe -NoProfile -NonInteractive -Command "[Console]::Out.Write((Get-Clipboard -Raw))"')
+    let text = substitute(text, '\r', '', 'g')
+    return ['v', split(text, "\n", 1)]
+endfunction
+
+if exists('v:clipproviders') && s:WslClipboardAvailable()
+    let v:clipproviders['wsl'] = {
+                \ 'available': function('<SID>WslClipboardAvailable'),
+                \ 'copy': {
+                \     '+': function('<SID>WslClipboardCopy'),
+                \     '*': function('<SID>WslClipboardCopy')
+                \ },
+                \ 'paste': {
+                \     '+': function('<SID>WslClipboardPaste'),
+                \     '*': function('<SID>WslClipboardPaste')
+                \ }
+                \ }
+    set clipmethod^=wsl
+endif
+
+if has('unnamedplus')
+    set clipboard=unnamedplus
+endif
+
+" A few common quality-of-life mappings.
+nnoremap <silent> <Leader>h :nohlsearch<CR>
+nnoremap <silent> <Leader>l :set list!<CR>
+xnoremap < <gv
+xnoremap > >gv
+
+" Reload this file after saving it and check for external file changes when
+" returning to Vim.
+augroup vimrc
+    autocmd!
+    execute 'autocmd BufWritePost ' . fnameescape(s:vimrc)
+                \ . ' source ' . fnameescape(s:vimrc)
+    autocmd FocusGained,BufEnter * if mode() !=# 'c' | checktime | endif
+augroup END

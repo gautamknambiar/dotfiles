@@ -1,6 +1,19 @@
 # File aliases
-if [[ -x /usr/bin/vim ]]; then
-    alias vim=/usr/bin/vim
+if [[ -x "$HOME/.local/opt/vim-9.2/bin/vim" ]]; then
+    alias vim='"$HOME/.local/opt/vim-9.2/bin/vim"'
+    alias ezvim='"$HOME/.local/opt/vim-9.2/bin/vim" -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/ezvimrc"'
+    if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+        alias ezgvim='GSK_RENDERER=cairo "$HOME/.local/opt/vim-9.2/bin/gvim" -f -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/ezvimrc"'
+    else
+        alias ezgvim='"$HOME/.local/opt/vim-9.2/bin/gvim" -f -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/ezvimrc"'
+    fi
+else
+    if [[ -x /usr/bin/vim ]]; then
+        alias vim='/usr/bin/vim -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/vimrc"'
+        alias ezvim='/usr/bin/vim -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/ezvimrc"'
+    else
+        alias ezvim='vim -Nu "${XDG_CONFIG_HOME:-$HOME/.config}/vim/ezvimrc"'
+    fi
 fi
 
 if ls --color=auto -d . >/dev/null 2>&1; then

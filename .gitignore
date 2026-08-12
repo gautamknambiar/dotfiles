@@ -9,11 +9,6 @@
 *.secret
 
 # Generated shell/app state.
-.config/fastfetch/logo.txt
-.config/fastfetch/config.generated.jsonc
-.config/fastfetch/*.tmp
-.config/nvim/undodir/
-.vim/undodir/
 *.swp
 *.swo
 *~

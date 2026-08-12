@@ -11,13 +11,13 @@ set incsearch
 set hlsearch
 colorscheme blue
 set undofile
-let s:undo_dir = exists('$XDG_STATE_HOME') ? $XDG_STATE_HOME . '/nvim/undo' : expand('~/.local/state/nvim/undo')
-if !isdirectory(s:undo_dir)
-    call mkdir(s:undo_dir, 'p', 0700)
-endif
-execute 'set undodir=' . fnameescape(s:undo_dir)
 set clipboard=unnamedplus
-autocmd BufWritePost ~/.config/nvim/init.vim source ~/.config/nvim/init.vim
+let s:nvim_config = stdpath('config') . '/init.vim'
+augroup nvim_config
+    autocmd!
+    execute 'autocmd BufWritePost ' . fnameescape(s:nvim_config)
+                \ . ' source ' . fnameescape(s:nvim_config)
+augroup END
 set backspace=indent,eol,start
 xnoremap <BS> "_c
 filetype indent plugin on
@@ -45,7 +45,7 @@ nnoremap º <Esc>:Lexplore<CR>:vertical resize 25<CR>
 
 nnoremap “ <Esc>:vsplit<CR>
 
-nnoremap ® <Esc>:so ~/.config/nvim/init.vim<CR>
+execute 'nnoremap ® <Esc>:source ' . fnameescape(s:nvim_config) . '<CR>'
 
 nnoremap ß <Esc>:w<CR>
 inoremap ß <Esc>:w<CR>i

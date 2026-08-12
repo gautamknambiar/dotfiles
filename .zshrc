@@ -3,7 +3,7 @@ if [[ "$(uname)" == "Darwin" && -x /opt/homebrew/bin/brew ]]; then
 fi
 
 ZSH_D="$HOME/.zsh.d"
-CONFIG_FILE="$HOME/.config/fastfetch/config_src.jsonc"
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/fastfetch/config_src.jsonc"
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
 DOTFILES_SHELL_LOADER="${DOTFILES_SHELL_LOADER:-$DOTFILES_DIR/Scripts/shell_loader.sh}"
 

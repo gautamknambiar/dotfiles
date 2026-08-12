@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/gautamknambiar/dotfiles.git}"
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
-BACKUP_DIR="${DOTFILES_BACKUP_DIR:-$HOME/dotfiles_backup}"
+DOTFILES_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles"
+BACKUP_DIR="${DOTFILES_BACKUP_DIR:-$DOTFILES_DATA_HOME/backups}"
 APPLESCRIPT_PATH="$DOTFILES_DIR/Scripts/terminal.applescript"
 
 is_macos() {
@@ -128,6 +129,81 @@ backup_target() {
     mv "$source_path" "$backup_path"
 }
 
+migrate_directory() {
+    local old_path="$1"
+    local new_path="$2"
+
+    [ -d "$old_path" ] || return 0
+
+    if [ -e "$new_path" ] || [ -L "$new_path" ]; then
+        echo "Keeping legacy directory at $old_path because $new_path already exists" >&2
+        return
+    fi
+
+    mkdir -p "$(dirname "$new_path")"
+    echo "Migrating $old_path to $new_path"
+    mv "$old_path" "$new_path"
+}
+
+migrate_file() {
+    local old_path="$1"
+    local new_path="$2"
+
+    [ -f "$old_path" ] || return 0
+
+    if [ -e "$new_path" ] || [ -L "$new_path" ]; then
+        echo "Keeping legacy file at $old_path because $new_path already exists" >&2
+        return
+    fi
+
+    mkdir -p "$(dirname "$new_path")"
+    echo "Migrating $old_path to $new_path"
+    mv "$old_path" "$new_path"
+}
+
+migrate_managed_layout() {
+    local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+    local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+
+    if [ -z "${DOTFILES_BACKUP_DIR:-}" ]; then
+        migrate_directory "$HOME/dotfiles_backup" "$data_home/dotfiles/backups"
+    fi
+
+    migrate_directory "$state_home/shell-motd" "$state_home/dotfiles/shell-motd"
+}
+
+migrate_vim_layout() {
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+    local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+
+    [ -f "$config_home/vim/vimrc" ] || return 0
+
+    migrate_directory "$state_home/vim/undo" "$data_home/vim/undo"
+    migrate_file "$HOME/.viminfo" "$state_home/vim/viminfo"
+}
+
+remove_managed_legacy_vim_links() {
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local name
+    local legacy_path
+    local managed_target
+
+    [ -f "$config_home/vim/vimrc" ] || return 0
+
+    for name in .vimrc .ezvimrc; do
+        legacy_path="$HOME/$name"
+        managed_target="$DOTFILES_DIR/$name"
+
+        if [ -L "$legacy_path" ] && [ "$(readlink "$legacy_path")" = "$managed_target" ]; then
+            echo "Removing managed legacy link $legacy_path"
+            rm "$legacy_path"
+        elif [ "$name" = ".vimrc" ] && [ -e "$legacy_path" ]; then
+            echo "Warning: $legacy_path takes precedence over the XDG Vim config; keeping it unchanged" >&2
+        fi
+    done
+}
+
 append_source_into_existing() {
     local source_path="$1"
     local destination_path="$2"
@@ -187,9 +263,18 @@ ensure_repo() {
 ensure_symlink() {
     local file="$1"
     local target="$DOTFILES_DIR/$file"
-    local home_path="$HOME/$file"
+    local home_path
     local parent_dir
     local action
+
+    case "$file" in
+        .config/*)
+            home_path="${XDG_CONFIG_HOME:-$HOME/.config}/${file#.config/}"
+            ;;
+        *)
+            home_path="$HOME/$file"
+            ;;
+    esac
 
     if [ ! -e "$target" ] && [ ! -L "$target" ]; then
         echo "Skipping $file because $target does not exist in the dotfiles repo"
@@ -248,7 +333,7 @@ maybe_link_group() {
 }
 
 install_neovim_packer() {
-    local packer_dir="$HOME/.local/share/nvim/site/pack/packer/start/packer.nvim"
+    local packer_dir="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/packer/start/packer.nvim"
 
     if [ -d "$packer_dir" ]; then
         echo "packer.nvim is already installed"
@@ -293,11 +378,14 @@ install_apt_packages() {
 }
 
 echo "Detected platform: $(platform_name)"
+migrate_managed_layout
 ensure_repo
 
 maybe_link_group "Install bash symlinks (.bashrc, .bash.d)?" .bashrc .bash.d
 maybe_link_group "Install zsh symlinks (.zshrc, .zsh.d)?" .zshrc .zsh.d
-maybe_link_group "Install Vim config symlink (.vimrc)?" .vimrc
+maybe_link_group "Install Vim config symlink (.config/vim)?" .config/vim
+migrate_vim_layout
+remove_managed_legacy_vim_links
 maybe_link_group "Install shared config symlinks (.config/nvim, .config/fastfetch)?" .config/nvim .config/fastfetch
 maybe_link_group "Install dotfiles profile symlink (.config/dotfiles/profile.sh)?" .config/dotfiles/profile.sh
 
@@ -381,6 +469,12 @@ elif is_linux; then
             vim
     else
         echo "Skipping apt package installation"
+    fi
+
+    if prompt_yes_no "Build/update Vim 9.2 with GTK4 and Wayland support?" "N"; then
+        "$DOTFILES_DIR/Scripts/install_vim.sh"
+    else
+        echo "Skipping Vim 9.2 source build"
     fi
 else
     echo "No installation available for system"

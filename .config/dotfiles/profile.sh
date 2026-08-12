@@ -1,0 +1,1 @@
+DOTFILES_SOURCE_EXCLUDE="bash_liqid zsh_liqid"

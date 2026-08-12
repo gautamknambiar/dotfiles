@@ -1,0 +1,272 @@
+" A small, modeless Vim configuration for people who expect Notepad behavior.
+
+set nocompatible
+set noloadplugins
+set nomodeline
+set insertmode
+set confirm
+behave mswin
+syntax off
+
+" Editing should feel like a conventional text box.
+set mouse=a
+set backspace=indent,eol,start
+set whichwrap+=<,>,[,]
+set selection=exclusive
+set selectmode=mouse,key
+set keymodel=startsel,stopsel
+set noautoindent
+set nocindent
+set nosmartindent
+set noexpandtab
+set tabstop=8
+set softtabstop=0
+set shiftwidth=8
+set textwidth=0
+set wrapmargin=0
+set nojoinspaces
+set virtualedit=onemore
+
+" Keep the display plain and close to Notepad.
+set nonumber
+set norelativenumber
+set wrap
+set linebreak
+set display=lastline
+set noruler
+set noshowcmd
+set noshowmode
+set laststatus=0
+set shortmess+=I
+set belloff=all
+
+" Search like a basic text editor: incremental, case-insensitive, and wrapping.
+set incsearch
+set ignorecase
+set nosmartcase
+set wrapscan
+set nohlsearch
+
+" Do not create Vim housekeeping files beside edited documents.
+set noswapfile
+set nobackup
+set nowritebackup
+set noundofile
+set viminfo=
+
+let s:ezvimrc = resolve(empty($XDG_CONFIG_HOME)
+            \ ? expand('~/.config/vim/ezvimrc')
+            \ : expand($XDG_CONFIG_HOME . '/vim/ezvimrc'))
+
+augroup ezvim_config
+    autocmd!
+    execute 'autocmd BufWritePost ' . fnameescape(s:ezvimrc)
+                \ . ' source ' . fnameescape(s:ezvimrc)
+augroup END
+
+" Vim 9.2 provides native clipboard registers and a provider API. WSLg does
+" not expose Wayland's data-control protocol, so bridge its Windows clipboard.
+function! s:WslClipboardAvailable() abort
+    return exists('$WSL_DISTRO_NAME') &&
+                \ executable('clip.exe') && executable('powershell.exe')
+endfunction
+
+function! s:WslClipboardCopy(register, register_type, lines) abort
+    let text = join(a:lines, "\n")
+    if a:register_type[0] ==# 'V'
+        let text .= "\n"
+    endif
+    call system('clip.exe', text)
+endfunction
+
+function! s:WslClipboardPaste(register) abort
+    let text = system('powershell.exe -NoProfile -NonInteractive -Command "[Console]::Out.Write((Get-Clipboard -Raw))"')
+    let text = substitute(text, '\r', '', 'g')
+    return ['v', split(text, "\n", 1)]
+endfunction
+
+if exists('v:clipproviders') && s:WslClipboardAvailable()
+    let v:clipproviders['wsl'] = {
+                \ 'available': function('<SID>WslClipboardAvailable'),
+                \ 'copy': {
+                \     '+': function('<SID>WslClipboardCopy'),
+                \     '*': function('<SID>WslClipboardCopy')
+                \ },
+                \ 'paste': {
+                \     '+': function('<SID>WslClipboardPaste'),
+                \     '*': function('<SID>WslClipboardPaste')
+                \ }
+                \ }
+    set clipmethod^=wsl
+endif
+
+if has('unnamedplus')
+    set clipboard=unnamedplus
+endif
+
+" File operations.
+function! s:NewFile() abort
+    confirm enew
+endfunction
+
+function! s:OpenFile() abort
+    if has('gui_running')
+        browse confirm edit
+        return
+    endif
+
+    let filename = input('Open: ', '', 'file')
+    redraw
+    if !empty(filename)
+        execute 'confirm edit ' . fnameescape(filename)
+    endif
+endfunction
+
+function! s:SaveAs() abort
+    if has('gui_running')
+        browse confirm saveas
+        return
+    endif
+
+    let filename = input('Save as: ', expand('%:p'), 'file')
+    redraw
+    if !empty(filename)
+        execute 'write ' . fnameescape(filename)
+    endif
+endfunction
+
+function! s:CloseEditor() abort
+    confirm quit
+endfunction
+
+" Find, Find Next/Previous, Replace, and Go To Line.
+function! s:SelectCurrentMatch() abort
+    let match_line = line('.')
+    let match_end = matchend(getline('.'), @/, col('.') - 1)
+    if match_end < 0
+        return
+    endif
+
+    normal! gh
+    call cursor(match_line, match_end + 1)
+endfunction
+
+function! s:Find() abort
+    let query = input('Find: ')
+    redraw
+    if empty(query)
+        return
+    endif
+
+    let @/ = '\V' . escape(query, '\')
+    if search(@/) == 0
+        echo 'Text not found: ' . query
+    else
+        call s:SelectCurrentMatch()
+    endif
+endfunction
+
+function! s:FindAgain(backward) abort
+    if empty(@/)
+        call s:Find()
+        return
+    endif
+
+    if search(@/, a:backward ? 'b' : '') == 0
+        echo 'No more matches'
+    else
+        call s:SelectCurrentMatch()
+    endif
+endfunction
+
+function! s:Replace() abort
+    let query = input('Find: ')
+    if empty(query)
+        redraw
+        return
+    endif
+
+    let replacement = input('Replace with: ')
+    redraw
+    let @/ = '\V' . escape(query, '\')
+    execute '%substitute/\V' . escape(query, '\/') . '/' .
+                \ escape(replacement, '\/&~') . '/gc'
+endfunction
+
+function! s:GoToLine() abort
+    let line_number = input('Go to line: ')
+    redraw
+    if line_number =~# '^\d\+$' && str2nr(line_number) > 0
+        call cursor(min([str2nr(line_number), line('$')]), 1)
+    endif
+endfunction
+
+" File shortcuts: New, Open, Save, Save As, and Close.
+nnoremap <silent> <C-N> :call <SID>NewFile()<CR>
+inoremap <silent> <C-N> <C-O>:call <SID>NewFile()<CR>
+nnoremap <silent> <C-O> :call <SID>OpenFile()<CR>
+inoremap <silent> <C-O> <C-\><C-O>:call <SID>OpenFile()<CR>
+nnoremap <silent> <C-S> :update<CR>
+vnoremap <silent> <C-S> <C-C>:update<CR>
+inoremap <silent> <C-S> <C-\><C-O>:update<CR>
+nnoremap <silent> <C-S-S> :call <SID>SaveAs()<CR>
+vnoremap <silent> <C-S-S> <C-C>:call <SID>SaveAs()<CR>
+inoremap <silent> <C-S-S> <C-O>:call <SID>SaveAs()<CR>
+" F12 is a fallback because many terminals cannot distinguish Ctrl+Shift+S.
+nnoremap <silent> <F12> :call <SID>SaveAs()<CR>
+inoremap <silent> <F12> <C-O>:call <SID>SaveAs()<CR>
+nnoremap <silent> <C-W> :call <SID>CloseEditor()<CR>
+inoremap <silent> <C-W> <C-O>:call <SID>CloseEditor()<CR>
+nnoremap <silent> <C-Q> :call <SID>CloseEditor()<CR>
+inoremap <silent> <C-Q> <C-O>:call <SID>CloseEditor()<CR>
+
+" Standard selection, clipboard, undo, and redo shortcuts.
+nnoremap <C-A> gggH<C-O>G
+inoremap <C-A> <C-O>gg<C-O>gH<C-O>G
+vnoremap <C-A> <C-C>ggVG
+vnoremap <silent> <C-C> "+ygv
+vnoremap <silent> <C-X> "+x
+vnoremap <silent> <C-Insert> "+ygv
+vnoremap <silent> <S-Del> "+x
+nnoremap <silent> <C-V> "+gP
+inoremap <silent> <C-V> <C-G>u<C-R>+
+vnoremap <silent> <C-V> c<C-R>+
+nnoremap <silent> <S-Insert> "+gP
+inoremap <silent> <S-Insert> <C-G>u<C-R>+
+vnoremap <silent> <S-Insert> c<C-R>+
+vnoremap <BS> d
+inoremap <C-Del> <C-O>dw
+nnoremap <C-Z> u
+inoremap <C-Z> <C-O>u
+nnoremap <C-Y> <C-R>
+inoremap <C-Y> <C-O><C-R>
+
+" Find, replace, navigation, and classic Notepad date/time insertion.
+if has('gui_running')
+    nnoremap <silent> <C-F> :promptfind<CR>
+    inoremap <silent> <C-F> <C-O>:promptfind<CR>
+    vnoremap <silent> <C-F> y:promptfind <C-R>"<CR>
+else
+    nnoremap <silent> <C-F> :call <SID>Find()<CR>
+    inoremap <silent> <C-F> <C-O>:call <SID>Find()<CR>
+    vnoremap <silent> <C-F> <C-C>:call <SID>Find()<CR>
+endif
+nnoremap <silent> <F3> :call <SID>FindAgain(0)<CR>
+inoremap <silent> <F3> <C-O>:call <SID>FindAgain(0)<CR>
+vnoremap <silent> <F3> <C-C>:call <SID>FindAgain(0)<CR>
+nnoremap <silent> <S-F3> :call <SID>FindAgain(1)<CR>
+inoremap <silent> <S-F3> <C-O>:call <SID>FindAgain(1)<CR>
+vnoremap <silent> <S-F3> <C-C>`<:call <SID>FindAgain(1)<CR>
+" Ctrl+H is indistinguishable from Backspace in some terminals; F4 always works.
+if has('gui_running')
+    nnoremap <silent> <C-H> :promptrepl<CR>
+    inoremap <silent> <C-H> <C-O>:promptrepl<CR>
+endif
+nnoremap <silent> <F4> :call <SID>Replace()<CR>
+inoremap <silent> <F4> <C-O>:call <SID>Replace()<CR>
+nnoremap <silent> <C-G> :call <SID>GoToLine()<CR>
+inoremap <silent> <C-G> <C-O>:call <SID>GoToLine()<CR>
+inoremap <silent> <F5> <C-R>=strftime('%H:%M %m/%d/%Y')<CR>
+
+" Start and remain in modeless Insert mode.
+startinsert

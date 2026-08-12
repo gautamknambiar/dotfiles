@@ -4,7 +4,7 @@ dotfiles_load_profile() {
     local profile_file="${DOTFILES_PROFILE_FILE:-}"
 
     if [[ -z "$profile_file" ]]; then
-        profile_file="$HOME/.config/dotfiles/profile.sh"
+        profile_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/profile.sh"
         if [[ ! -r "$profile_file" && -r "${DOTFILES_DIR:-$HOME/dotfiles}/.config/dotfiles/profile.sh" ]]; then
             profile_file="${DOTFILES_DIR:-$HOME/dotfiles}/.config/dotfiles/profile.sh"
         fi
@@ -128,12 +128,13 @@ dotfiles_render_sourced_files() {
 }
 
 dotfiles_show_fastfetch() {
-    local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
-    local stamp_dir="$state_home/shell-motd"
-    local logo_file="${LOGO_FILE:-$stamp_dir/fastfetch-logo.txt}"
-    local config_file="${CONFIG_FILE:-$HOME/.config/fastfetch/config_src.jsonc}"
-    local generated_config="$stamp_dir/fastfetch-config.jsonc"
-    local newcomp_file="$HOME/.config/fastfetch/newcomp.txt"
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local runtime_home="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    local runtime_dir
+    local logo_file
+    local generated_config
+    local config_file="${CONFIG_FILE:-$config_home/fastfetch/config_src.jsonc}"
+    local newcomp_file="$config_home/fastfetch/newcomp.txt"
     local top_value
     local fastfetch_status
 
@@ -141,7 +142,10 @@ dotfiles_show_fastfetch() {
     [[ -f "$config_file" ]] || return 1
     command -v jq >/dev/null 2>&1 || return 1
     command -v fastfetch >/dev/null 2>&1 || return 1
-    mkdir -p "$stamp_dir"
+
+    runtime_dir="$(mktemp -d "${runtime_home%/}/dotfiles-shell-motd.XXXXXX")" || return 1
+    logo_file="${LOGO_FILE:-$runtime_dir/fastfetch-logo.txt}"
+    generated_config="$runtime_dir/fastfetch-config.jsonc"
 
     cat "$newcomp_file" > "$logo_file"
     printf "\n" >> "$logo_file"
@@ -157,19 +161,21 @@ dotfiles_show_fastfetch() {
         '.logo.padding.top = $newTop | .logo.source = $logoSource' \
         "$config_file" > "$generated_config"; then
         rm -f "$logo_file" "$generated_config"
+        rmdir "$runtime_dir" 2>/dev/null || true
         return 1
     fi
 
     fastfetch --config "$generated_config"
     fastfetch_status=$?
     rm -f "$logo_file" "$generated_config"
+    rmdir "$runtime_dir" 2>/dev/null || true
     return "$fastfetch_status"
 }
 
 dotfiles_daily_motd() {
     local shell_name="$1"
     local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
-    local stamp_dir="$state_home/shell-motd"
+    local stamp_dir="$state_home/dotfiles/shell-motd"
     local stamp_file="$stamp_dir/${shell_name}-fastfetch.last"
     local today
 
