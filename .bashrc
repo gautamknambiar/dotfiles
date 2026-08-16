@@ -122,6 +122,7 @@ if ! shopt -oq posix; then
   fi
 fi
 
+export PATH="$PATH:$HOME/go/bin"
 export EDITOR=vim
 export VISUAL=vim
 
@@ -150,3 +151,4 @@ fi
 if [ -r "$HOME/.local/bin/env" ]; then
     . "$HOME/.local/bin/env"
 fi
+
