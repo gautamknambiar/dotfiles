@@ -1,19 +1,9 @@
 .DS_Store
 
-# Local secrets and machine-specific environment.
+# Local machine configuration.
 .env
-.env.*
-!.env.example
-*.pem
-*.key
-*.secret
-
-# Generated shell/app state.
-*.swp
-*.swo
-*~
 
 # Local tool state that should not be committed from a symlinked .config.
 .config/Code/User/mcp.json
-.config/uv/
+.config/uv/uv-receipt.json
 .config/fish/conf.d/uv.env.fish

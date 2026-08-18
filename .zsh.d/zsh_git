@@ -144,6 +144,8 @@ gb() {
     local -a branches
     local -a indexed_lines
 
+    (( $# == 0 )) && set -- -vv
+
     git_parse_args "$@" || return 1
     set -- "${ugit_parsed_args[@]}"
 

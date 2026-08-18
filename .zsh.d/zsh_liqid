@@ -1,3 +1,7 @@
+# Use the internal LiteLLM profile by default; bypass it with ccodex.
+alias codex='command codex --profile internal'
+alias ccodex='command codex'
+
 _liqid_load_dotfiles_env() {
   local env_file="${DOTFILES_ENV_FILE:-$HOME/dotfiles/.env}"
   local docker_conf="${LIQID_DOCKER_CONF:-$HOME/.liqid/docker.conf}"
