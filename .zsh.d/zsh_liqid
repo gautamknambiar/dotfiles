@@ -3,16 +3,13 @@ alias codex='command codex --profile internal'
 alias ccodex='command codex'
 
 _liqid_load_dotfiles_env() {
-  local env_file="${DOTFILES_ENV_FILE:-$HOME/dotfiles/.env}"
-  local docker_conf="${LIQID_DOCKER_CONF:-$HOME/.liqid/docker.conf}"
+  local local_home="${DOTFILES_LOCAL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles}"
+  local env_file="${DOTFILES_ENV_FILE:-$local_home/env}"
+  local docker_conf="${LIQID_DOCKER_CONF:-$local_home/liqid/docker.conf}"
 
   if [[ -r "$env_file" ]]; then
     set -a
     source "$env_file"
-    set +a
-  elif [[ -r "$HOME/.env" ]]; then
-    set -a
-    source "$HOME/.env"
     set +a
   fi
 
@@ -208,7 +205,7 @@ _liqid_select_remote_tag() {
 
   if [[ $remote_status -eq 2 ]]; then
     echo "Docker credentials not set." >&2
-    echo "Set them in $HOME/.liqid/docker.conf or dotfiles/.env." >&2
+    echo "Set them in ${DOTFILES_LOCAL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles}/liqid/docker.conf or the local dotfiles env file." >&2
     _liqid_prompt_for_tag
     return 0
   fi
@@ -1098,7 +1095,8 @@ dev() {
 }
 
 bbdl() (
-  local bitbucket_config_file="${BITBUCKET_CONF:-$HOME/.liqid/bitbucket.conf}"
+  local local_home="${DOTFILES_LOCAL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles}"
+  local bitbucket_config_file="${BITBUCKET_CONF:-$local_home/liqid/bitbucket.conf}"
   local bitbucket_username bitbucket_app_password workspace repository download_filename download_dir temporary_dir
   local force_refresh force_filename
   local cache_root_dir cache_ttl_seconds cache_workspace_key cache_repository_key cache_dir cache_complete_file cache_partial_file
@@ -1201,7 +1199,7 @@ EOF
 
   if [[ -z "$bitbucket_username" || -z "$bitbucket_app_password" ]]; then
     echo "BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD must be set." >&2
-    echo "Set them in $bitbucket_config_file, dotfiles/.env, or your shell environment." >&2
+    echo "Set them in $bitbucket_config_file, the local dotfiles env file, or your shell environment." >&2
     return 1
   fi
 

@@ -2,6 +2,8 @@
 
 dotfiles_load_profile() {
     local profile_file="${DOTFILES_PROFILE_FILE:-}"
+    local local_home
+    local local_profile_file
 
     if [[ -z "$profile_file" ]]; then
         profile_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/profile.sh"
@@ -12,6 +14,13 @@ dotfiles_load_profile() {
 
     if [[ -r "$profile_file" ]]; then
         . "$profile_file"
+    fi
+
+    local_home="${DOTFILES_LOCAL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles}"
+    local_profile_file="${DOTFILES_LOCAL_PROFILE_FILE:-$local_home/profile.sh}"
+
+    if [[ "$local_profile_file" != "$profile_file" && -r "$local_profile_file" ]]; then
+        . "$local_profile_file"
     fi
 }
 

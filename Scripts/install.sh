@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/gautamknambiar/dotfiles.git}"
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
-DOTFILES_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles"
+DOTFILES_LOCAL_HOME="${DOTFILES_LOCAL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles}"
+DOTFILES_DATA_HOME="$DOTFILES_LOCAL_HOME"
 BACKUP_DIR="${DOTFILES_BACKUP_DIR:-$DOTFILES_DATA_HOME/backups}"
 APPLESCRIPT_PATH="$DOTFILES_DIR/Scripts/terminal.applescript"
 
@@ -159,6 +160,70 @@ migrate_file() {
     mkdir -p "$(dirname "$new_path")"
     echo "Migrating $old_path to $new_path"
     mv "$old_path" "$new_path"
+}
+
+migrate_legacy_config_root() {
+    local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local repo_config="$DOTFILES_DIR/.config"
+    local resolved_config_home
+    local resolved_repo_config
+    local local_files_file
+    local repo_path
+    local relative_path
+    local destination_path
+
+    [ -L "$config_home" ] || return 0
+    [ -d "$repo_config" ] || return 0
+
+    resolved_config_home="$(cd "$config_home" && pwd -P)"
+    resolved_repo_config="$(cd "$repo_config" && pwd -P)"
+    [ "$resolved_config_home" = "$resolved_repo_config" ] || return 0
+
+    local_files_file="$(mktemp "${TMPDIR:-/tmp}/dotfiles-local-config.XXXXXX")"
+    git -C "$DOTFILES_DIR" ls-files -z --others -- .config > "$local_files_file"
+
+    echo "Replacing the legacy $config_home repository symlink with a local config directory"
+    rm "$config_home"
+    mkdir -p "$config_home"
+
+    while IFS= read -r -d '' repo_path; do
+        relative_path="${repo_path#.config/}"
+        destination_path="$config_home/$relative_path"
+        mkdir -p "$(dirname "$destination_path")"
+        echo "Moving machine-local config to $destination_path"
+        mv "$DOTFILES_DIR/$repo_path" "$destination_path"
+    done < "$local_files_file"
+
+    rm "$local_files_file"
+    find "$repo_config" -depth -type d -empty -delete
+}
+
+migrate_machine_config() {
+    local local_home="$DOTFILES_LOCAL_HOME"
+    local profile_file="$local_home/profile.sh"
+    local env_file="$local_home/env"
+    local liqid_home="$local_home/liqid"
+
+    mkdir -p "$local_home" "$liqid_home"
+
+    migrate_file "$DOTFILES_DIR/.env" "$env_file"
+    migrate_file "$HOME/.liqid/docker.conf" "$liqid_home/docker.conf"
+    migrate_file "$HOME/.liqid/bitbucket.conf" "$liqid_home/bitbucket.conf"
+
+    if [ ! -e "$profile_file" ]; then
+        echo "Creating machine-local shell profile at $profile_file"
+        printf '%s\n' \
+            '# Machine-local dotfiles overrides. This file is not version controlled.' \
+            '# DOTFILES_SOURCE_EXCLUDE="bash_liqid zsh_liqid"' \
+            > "$profile_file"
+    fi
+
+    chmod 600 "$profile_file"
+    [ ! -f "$env_file" ] || chmod 600 "$env_file"
+    [ ! -f "$liqid_home/docker.conf" ] || chmod 600 "$liqid_home/docker.conf"
+    [ ! -f "$liqid_home/bitbucket.conf" ] || chmod 600 "$liqid_home/bitbucket.conf"
+
+    rmdir "$HOME/.liqid" 2>/dev/null || true
 }
 
 migrate_managed_layout() {
@@ -380,6 +445,8 @@ install_apt_packages() {
 echo "Detected platform: $(platform_name)"
 migrate_managed_layout
 ensure_repo
+migrate_legacy_config_root
+migrate_machine_config
 
 maybe_link_group "Install bash symlinks (.bashrc, .bash.d)?" .bashrc .bash.d
 maybe_link_group "Install zsh symlinks (.zshrc, .zsh.d)?" .zshrc .zsh.d
@@ -387,7 +454,7 @@ maybe_link_group "Install Vim config symlink (.config/vim)?" .config/vim
 migrate_vim_layout
 remove_managed_legacy_vim_links
 maybe_link_group "Install shared config symlinks (.config/nvim, .config/fastfetch)?" .config/nvim .config/fastfetch
-maybe_link_group "Install dotfiles profile symlink (.config/dotfiles/profile.sh)?" .config/dotfiles/profile.sh
+maybe_link_group "Install global dotfiles profile symlink (.config/dotfiles/profile.sh)?" .config/dotfiles/profile.sh
 
 if is_macos; then
     maybe_link_group "Install macOS Terminal profile config (.config/terminal)?" .config/terminal

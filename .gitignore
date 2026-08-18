@@ -1,9 +1,1 @@
 .DS_Store
-
-# Local machine configuration.
-.env
-
-# Local tool state that should not be committed from a symlinked .config.
-.config/Code/User/mcp.json
-.config/uv/uv-receipt.json
-.config/fish/conf.d/uv.env.fish
